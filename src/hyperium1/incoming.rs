@@ -1,8 +1,6 @@
-use std::{
-    io::Cursor,
-    task::{Context, Poll},
-};
+use std::task::{Context, Poll};
 
+use bytes::Bytes;
 use http_body1::Frame;
 
 use crate::{
@@ -17,7 +15,7 @@ where
     IncomingBody: WasiIncomingBody,
     Registry: PollableRegistry<Pollable = IncomingBody::Pollable>,
 {
-    type Data = Cursor<Vec<u8>>;
+    type Data = Bytes;
     type Error = Error;
 
     fn poll_frame(
@@ -45,7 +43,7 @@ where
     fn poll_hyperium1_trailers(
         &mut self,
         cx: &mut Context,
-    ) -> Poll<Option<Result<Frame<Cursor<Vec<u8>>>, Error>>> {
+    ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
         match self.poll_incoming_trailers(cx)? {
             Poll::Ready(Some(trailers)) => {
                 Poll::Ready(Some(Ok(Frame::trailers(trailers.try_into()?))))

@@ -1,4 +1,6 @@
-use std::{io::Cursor, task::Poll};
+use std::task::Poll;
+
+use bytes::Bytes;
 
 use crate::{
     incoming::{IncomingHttpBody, IncomingState},
@@ -44,7 +46,7 @@ where
     IncomingBody: WasiIncomingBody,
     Registry: PollableRegistry<Pollable = IncomingBody::Pollable>,
 {
-    type Data = Cursor<Vec<u8>>;
+    type Data = Bytes;
     type Error = Error;
 
     fn poll_data(

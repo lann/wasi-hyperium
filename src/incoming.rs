@@ -1,7 +1,6 @@
-use std::{
-    io::Cursor,
-    task::{Context, Poll},
-};
+use std::task::{Context, Poll};
+
+use bytes::Bytes;
 
 use crate::{
     poll::PollableRegistry,
@@ -34,16 +33,13 @@ where
         Ok(IncomingBody::new(body, registry)?.into())
     }
 
-    pub fn poll_incoming_body(
-        &mut self,
-        cx: &mut Context,
-    ) -> Poll<Option<Result<Cursor<Vec<u8>>, Error>>> {
+    pub fn poll_incoming_body(&mut self, cx: &mut Context) -> Poll<Option<Result<Bytes, Error>>> {
         let IncomingState::Body(incoming_body) = &mut self.state else {
             panic!("poll_incoming_body called on non-body state")
         };
 
         match incoming_body.stream().poll_read(READ_FRAME_SIZE, cx) {
-            Poll::Ready(Ok(data)) => Poll::Ready(Some(Ok(Cursor::new(data)))),
+            Poll::Ready(Ok(data)) => Poll::Ready(Some(Ok(data.into()))),
             Poll::Ready(Err(Error::WasiStreamClosed)) => {
                 self.state = IncomingState::Trailers(self.take_body().finish());
                 Poll::Ready(None)
