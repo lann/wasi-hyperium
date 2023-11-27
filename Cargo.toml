@@ -1,0 +1,24 @@
+[package]
+name = "wasi-hyperium"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# TODO: remove at least one of these
+default = ["hyperium0", "hyperium1"]
+hyperium0 = ["dep:http0", "dep:http-body0", "dep:bytes", "dep:tower-service"]
+hyperium1 = ["dep:http1", "dep:http-body1", "dep:bytes"]
+
+[dependencies]
+anyhow = "1.0.75"
+thiserror = "1.0.50"
+
+bytes = { version = "1.5.0", optional = true }
+http0 = { version = "<1.0.0", package = "http", optional = true }
+http-body0 = { version = "<1.0.0", package = "http-body", optional = true }
+http1 = { version = "1.0.0", package = "http", optional = true }
+http-body1 = { version = "1.0.0", package = "http-body", optional = true }
+tower-service = { version = "0.3.2", optional = true }
+
+[dev-dependencies]
+wit-bindgen = "0.14.0"

@@ -1,0 +1,9 @@
+package wasi:preview2-types;
+
+world incoming {
+  export wasi:http/incoming-handler@0.2.0-rc-2023-11-10;
+}
+
+world test {
+  import wasi:http/outgoing-handler@0.2.0-rc-2023-11-10;
+}
