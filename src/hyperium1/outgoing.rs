@@ -8,9 +8,27 @@ use bytes::Buf;
 use crate::{
     outgoing::{Copied, OutgoingBodyCopier},
     poll::PollableRegistry,
-    wasi::{traits::WasiOutgoingBody, OutgoingBody, PollableOf},
+    wasi::{
+        traits::{WasiOutgoingBody, WasiOutgoingResponse},
+        OutgoingBody, OutgoingResponse, PollableOf,
+    },
     Error,
 };
+
+pub fn outgoing_response<B, Response, Registry>(
+    resp: &http1::Response<B>,
+    registry: Registry,
+) -> Result<OutgoingResponse<Response, Registry>, Error>
+where
+    Response: WasiOutgoingResponse,
+    Registry: PollableRegistry<
+        Pollable = PollableOf<<Response::OutgoingBody as WasiOutgoingBody>::OutputStream>,
+    >,
+{
+    let mut outgoing = OutgoingResponse::from_headers(&resp.headers().into(), registry)?;
+    outgoing.set_status_code(resp.status().as_u16())?;
+    Ok(outgoing)
+}
 
 pub struct Hyperium1OutgoingBodyCopier<HttpBody, WasiBody, Registry>
 where
@@ -29,8 +47,7 @@ where
     WasiBody: WasiOutgoingBody,
     Registry: PollableRegistry<Pollable = PollableOf<WasiBody::OutputStream>>,
 {
-    pub fn new(src: HttpBody, dest: WasiBody, registry: Registry) -> Result<Self, Error> {
-        let dest = OutgoingBody::new(dest, registry)?;
+    pub fn new(src: HttpBody, dest: OutgoingBody<WasiBody, Registry>) -> Result<Self, Error> {
         Ok(Self {
             src,
             dest: Some(dest),
