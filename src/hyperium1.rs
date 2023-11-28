@@ -1,9 +1,10 @@
 mod incoming;
 mod outgoing;
+mod send;
 mod service;
 
 pub use incoming::incoming_request;
-pub use outgoing::{outgoing_response, Hyperium1OutgoingBodyCopier};
+pub use outgoing::{outgoing_request, outgoing_response, Hyperium1OutgoingBodyCopier};
 pub use service::handle_service_call;
 
 use crate::wasi::{FieldEntries, Method, Scheme};
@@ -27,6 +28,23 @@ impl TryFrom<Method> for http1::Method {
     }
 }
 
+impl From<&http1::Method> for Method {
+    fn from(method: &http1::Method) -> Self {
+        match method {
+            &http1::Method::GET => Self::Get,
+            &http1::Method::HEAD => Self::Head,
+            &http1::Method::POST => Self::Post,
+            &http1::Method::PUT => Self::Put,
+            &http1::Method::DELETE => Self::Delete,
+            &http1::Method::CONNECT => Self::Connect,
+            &http1::Method::OPTIONS => Self::Options,
+            &http1::Method::TRACE => Self::Trace,
+            &http1::Method::PATCH => Self::Patch,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
 impl TryFrom<Scheme> for http1::uri::Scheme {
     type Error = http1::Error;
 
@@ -36,6 +54,18 @@ impl TryFrom<Scheme> for http1::uri::Scheme {
             Scheme::Https => Self::HTTPS,
             Scheme::Other(other) => other.parse()?,
         })
+    }
+}
+
+impl From<&http1::uri::Scheme> for Scheme {
+    fn from(scheme: &http1::uri::Scheme) -> Self {
+        if scheme == &http1::uri::Scheme::HTTP {
+            Self::Http
+        } else if scheme == &http1::uri::Scheme::HTTPS {
+            Self::Https
+        } else {
+            Self::Other(scheme.to_string())
+        }
     }
 }
 

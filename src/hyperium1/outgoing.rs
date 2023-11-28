@@ -9,11 +9,36 @@ use crate::{
     outgoing::{Copied, OutgoingBodyCopier},
     poll::PollableRegistry,
     wasi::{
-        traits::{WasiOutgoingBody, WasiOutgoingResponse},
-        OutgoingBody, OutgoingResponse, PollableOf,
+        traits::{WasiOutgoingBody, WasiOutgoingRequest, WasiOutgoingResponse},
+        OutgoingBody, OutgoingRequest, OutgoingResponse, PollableOf,
     },
     Error,
 };
+
+pub fn outgoing_request<B, Request, Registry>(
+    request: &http1::Request<B>,
+    registry: Registry,
+) -> Result<OutgoingRequest<Request, Registry>, Error>
+where
+    Request: WasiOutgoingRequest,
+    Registry: PollableRegistry<
+        Pollable = PollableOf<<Request::OutgoingBody as WasiOutgoingBody>::OutputStream>,
+    >,
+{
+    let mut req = OutgoingRequest::from_headers(&request.headers().into(), registry)?;
+    req.set_method(request.method().into())?;
+    if let Some(path_with_query) = request.uri().path_and_query() {
+        req.set_path_with_query(Some(path_with_query.as_str()))?;
+    }
+    if let Some(scheme) = request.uri().scheme() {
+        req.set_scheme(Some(scheme.into()))?;
+    }
+    if let Some(authority) = request.uri().authority() {
+        req.set_authority(Some(authority.as_str()))?;
+    }
+
+    Ok(req)
+}
 
 pub fn outgoing_response<B, Response, Registry>(
     resp: &http1::Response<B>,

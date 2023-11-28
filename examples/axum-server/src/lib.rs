@@ -14,7 +14,6 @@ wit_bindgen::generate!({
     exports: {
         "wasi:http/incoming-handler": Guest,
     },
-    ownership: Borrowing{ duplicate_if_necessary: false }
 });
 
 wasi_hyperium::impl_wasi_2023_11_10!(wasi);

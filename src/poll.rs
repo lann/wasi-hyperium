@@ -6,7 +6,10 @@ use std::{
 
 use crate::wasi::traits::{WasiPoll, WasiPollable};
 
-pub trait PollableRegistry: Unpin {
+/// A PollableRegistry manages the polling of Pollables in relation to some
+/// Rust async executor. This must be a cheaply-`clone`able handle to its
+/// underlying state.
+pub trait PollableRegistry: Clone + Unpin {
     type Pollable: WasiPollable;
     type RegisteredPollable: Unpin;
 
@@ -15,8 +18,8 @@ pub trait PollableRegistry: Unpin {
     /// immediately dropped when the returned RegisteredPollable is dropped.
     fn register_pollable(
         &self,
-        pollable: Self::Pollable,
         cx: &mut Context,
+        pollable: Self::Pollable,
     ) -> Self::RegisteredPollable;
 
     /// Poll all pollables. Returns false if there are no active pollables.
@@ -55,8 +58,8 @@ impl<Pollable: WasiPoll> PollableRegistry for Poller<Pollable> {
 
     fn register_pollable(
         &self,
-        pollable: Self::Pollable,
         cx: &mut Context,
+        pollable: Self::Pollable,
     ) -> Self::RegisteredPollable {
         let handle = pollable.handle();
         let pollable = Arc::new(pollable);

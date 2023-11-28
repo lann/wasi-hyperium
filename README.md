@@ -2,8 +2,7 @@
 
 ```rust
 wit_bindgen::generate!({
-    ... // World must include wasi:http/types@0.2.0-rc-2023-11-10
-    ownership: Borrowing{ duplicate_if_necessary: false }
+    // World must include wasi:http/outgoing-handler@0.2.0-rc-2023-11-10
 });
 
 // Implement wrapper traits

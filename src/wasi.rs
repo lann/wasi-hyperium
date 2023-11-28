@@ -1,11 +1,15 @@
-use std::task::{Context, Poll};
+use std::{
+    future::{Future, IntoFuture},
+    task::{Context, Poll},
+};
 
 use crate::{poll::PollableRegistry, Error};
 
 use self::traits::{
-    WasiFields, WasiFutureTrailers, WasiIncomingBody, WasiIncomingRequest, WasiInputStream,
-    WasiMethod, WasiOutgoingBody, WasiOutgoingResponse, WasiOutputStream, WasiResponseOutparam,
-    WasiScheme, WasiSubscribe,
+    WasiFields, WasiFutureIncomingResponse, WasiFutureTrailers, WasiIncomingBody,
+    WasiIncomingRequest, WasiIncomingResponse, WasiInputStream, WasiMethod, WasiOutgoingBody,
+    WasiOutgoingHandler, WasiOutgoingRequest, WasiOutgoingResponse, WasiOutputStream,
+    WasiResponseOutparam, WasiScheme, WasiSubscribe,
 };
 
 mod impl_2023_11_10;
@@ -35,11 +39,11 @@ where
 
     fn register_subscribe(&mut self, cx: &mut Context) {
         let pollable = self.inner.subscribe();
-        self.handle = Some(self.registry.register_pollable(pollable, cx));
+        self.handle = Some(self.registry.register_pollable(cx, pollable));
     }
 
-    fn into_registry(self) -> Registry {
-        self.registry
+    fn registry(&self) -> &Registry {
+        &self.registry
     }
 }
 
@@ -65,7 +69,7 @@ where
         Self { stream }
     }
 
-    pub fn poll_read(&mut self, len: usize, cx: &mut Context) -> Poll<Result<Vec<u8>, Error>> {
+    pub fn poll_read(&mut self, cx: &mut Context, len: usize) -> Poll<Result<Vec<u8>, Error>> {
         let data = self
             .stream
             .read(len.try_into().unwrap())
@@ -78,13 +82,13 @@ where
         }
     }
 
-    pub fn into_registry(self) -> Registry {
-        self.stream.into_registry()
+    fn registry(&self) -> &Registry {
+        self.stream.registry()
     }
 }
 
 pub struct OutputStream<Stream, Registry: PollableRegistry> {
-    inner: Subscribable<Stream, Registry>,
+    stream: Subscribable<Stream, Registry>,
 }
 
 impl<Stream, Registry> OutputStream<Stream, Registry>
@@ -92,25 +96,53 @@ where
     Stream: WasiOutputStream,
     Registry: PollableRegistry<Pollable = Stream::Pollable>,
 {
-    pub fn new(inner: Stream, registry: Registry) -> Self {
-        let inner = Subscribable::new(inner, registry);
-        Self { inner }
+    pub fn new(stream: Stream, registry: Registry) -> Self {
+        let stream = Subscribable::new(stream, registry);
+        Self { stream }
     }
 
     pub fn poll_check_write(
         &mut self,
         cx: &mut Context,
     ) -> Poll<Result<OutputStreamPermit<Stream>, Error>> {
-        let size = self.inner.check_write().map_err(Error::wasi_stream_error)?;
+        let size = self
+            .stream
+            .check_write()
+            .map_err(Error::wasi_stream_error)?;
         if size == 0 {
-            self.inner.register_subscribe(cx);
+            self.stream.register_subscribe(cx);
             Poll::Pending
         } else {
             Poll::Ready(Ok(OutputStreamPermit {
-                stream: &self.inner.inner,
+                stream: &self.stream.inner,
                 size,
             }))
         }
+    }
+
+    pub fn poll_splice(
+        &mut self,
+        cx: &mut Context,
+        src: &InputStream<Stream::InputStream, Registry>,
+        len: u64,
+    ) -> Poll<Result<u64, Error>> {
+        if len == 0 {
+            return Poll::Ready(Ok(0));
+        }
+        let size = self
+            .stream
+            .splice(&src.stream.inner, len)
+            .map_err(Error::wasi_stream_error)?;
+        if size == 0 {
+            self.stream.register_subscribe(cx);
+            Poll::Pending
+        } else {
+            Poll::Ready(Ok(size))
+        }
+    }
+
+    fn registry(&self) -> &Registry {
+        self.stream.registry()
     }
 }
 
@@ -163,7 +195,7 @@ where
 
     pub fn finish(self) -> FutureTrailers<Body::FutureTrailers, Registry> {
         let Self { stream, body } = self;
-        let registry = stream.into_registry();
+        let registry = stream.registry().clone();
         let trailers = Subscribable::new(body.finish(), registry);
         FutureTrailers { trailers }
     }
@@ -173,12 +205,14 @@ pub struct FutureTrailers<Trailers, Registry: PollableRegistry> {
     trailers: Subscribable<Trailers, Registry>,
 }
 
-impl<Trailers, Registry> FutureTrailers<Trailers, Registry>
+impl<Trailers, Registry> Future for FutureTrailers<Trailers, Registry>
 where
     Trailers: WasiFutureTrailers,
     Registry: PollableRegistry<Pollable = Trailers::Pollable>,
 {
-    pub fn poll_trailers(&mut self, cx: &mut Context) -> Poll<Result<Option<FieldEntries>, Error>> {
+    type Output = Result<Option<FieldEntries>, Error>;
+
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.trailers.get() {
             Some(Ok(Some(fields))) => Poll::Ready(Ok(Some(fields.into()))),
             Some(Ok(None)) => Poll::Ready(Ok(None)),
@@ -241,6 +275,44 @@ where
     }
 }
 
+pub struct IncomingResponse<Response: WasiIncomingResponse, Registry: PollableRegistry> {
+    response: Response,
+    body: IncomingBody<Response::IncomingBody, Registry>,
+}
+
+pub type IncomingResponsePollable<Response> =
+    PollableOf<<<Response as WasiIncomingResponse>::IncomingBody as WasiIncomingBody>::InputStream>;
+
+impl<Response, Registry> IncomingResponse<Response, Registry>
+where
+    Response: WasiIncomingResponse,
+    Registry: PollableRegistry<Pollable = IncomingResponsePollable<Response>>,
+{
+    pub fn new(response: Response, registry: Registry) -> Result<Self, Error> {
+        let body = response
+            .consume()
+            .map_err(|()| Error::WasiInvalidState("incoming-response.consume already called"))?;
+        let body = IncomingBody::new(body, registry)?;
+        Ok(Self { response, body })
+    }
+
+    pub fn status(&self) -> u16 {
+        self.response.status()
+    }
+
+    pub fn headers(&self) -> FieldEntries {
+        self.response.headers().into()
+    }
+
+    pub fn body(&mut self) -> &mut IncomingBody<Response::IncomingBody, Registry> {
+        &mut self.body
+    }
+
+    pub fn into_body(self) -> IncomingBody<Response::IncomingBody, Registry> {
+        self.body
+    }
+}
+
 pub struct OutgoingBody<Body: WasiOutgoingBody, Registry: PollableRegistry> {
     // NOTE: order matters; stream must be dropped before body
     stream: OutputStream<Body::OutputStream, Registry>,
@@ -272,6 +344,169 @@ where
         };
         drop(self.stream);
         self.body.finish(trailers).map_err(Error::wasi_error_code)
+    }
+
+    fn registry(&self) -> &Registry {
+        self.stream.registry()
+    }
+}
+
+pub struct OutgoingRequest<Request: WasiOutgoingRequest, Registry: PollableRegistry> {
+    request: Request,
+    body: OutgoingBody<Request::OutgoingBody, Registry>,
+}
+
+pub type OutgoingRequestPollable<Request> =
+    PollableOf<<<Request as WasiOutgoingRequest>::OutgoingBody as WasiOutgoingBody>::OutputStream>;
+
+impl<Request, Registry> OutgoingRequest<Request, Registry>
+where
+    Request: WasiOutgoingRequest,
+    Registry: PollableRegistry<Pollable = OutgoingRequestPollable<Request>>,
+{
+    pub fn new(request: Request, registry: Registry) -> Result<Self, Error> {
+        let body = request
+            .body()
+            .map_err(|()| Error::WasiInvalidState("outgoing-request.body already called"))?;
+        let body = OutgoingBody::new(body, registry)?;
+        Ok(Self { request, body })
+    }
+
+    pub fn from_headers(headers: &FieldEntries, registry: Registry) -> Result<Self, Error> {
+        let fields = headers.try_into_fields()?;
+        let response = Request::new(fields);
+        Self::new(response, registry)
+    }
+
+    pub fn set_method(&mut self, method: Method) -> Result<(), Error> {
+        self.request
+            .set_method(&Request::Method::from_method(method))
+            .map_err(|()| Error::WasiInvalidValue("invalid method"))
+    }
+
+    pub fn set_path_with_query(&mut self, path_with_query: Option<&str>) -> Result<(), Error> {
+        self.request
+            .set_path_with_query(path_with_query)
+            .map_err(|()| Error::WasiInvalidValue("invalid path_with_query"))
+    }
+
+    pub fn set_scheme(&mut self, scheme: Option<Scheme>) -> Result<(), Error> {
+        let scheme = scheme.map(Request::Scheme::from_scheme);
+        self.request
+            .set_scheme(scheme.as_ref())
+            .map_err(|()| Error::WasiInvalidValue("invalid scheme"))
+    }
+
+    pub fn set_authority(&mut self, authority: Option<&str>) -> Result<(), Error> {
+        self.request
+            .set_authority(authority)
+            .map_err(|()| Error::WasiInvalidValue("invalid authority"))
+    }
+}
+
+impl<Request, Registry> OutgoingRequest<Request, Registry>
+where
+    Request: WasiOutgoingHandler,
+    Request::FutureIncomingResponse:
+        WasiFutureIncomingResponse<Pollable = OutgoingRequestPollable<Request>>,
+    Registry: PollableRegistry<Pollable = OutgoingRequestPollable<Request>>,
+{
+    pub fn send(
+        self,
+        options: Option<Request::RequestOptions>,
+    ) -> Result<
+        ActiveOutgoingRequest<Request::OutgoingBody, Request::FutureIncomingResponse, Registry>,
+        Error,
+    > {
+        let Self { request, body } = self;
+        let response = request.handle(options).map_err(Error::wasi_error_code)?;
+        let inner = Subscribable::new(response, body.registry().clone());
+        let future_response = FutureIncomingResponse { inner };
+        Ok(ActiveOutgoingRequest {
+            body,
+            future_response,
+        })
+    }
+}
+
+pub struct ActiveOutgoingRequest<Body, FutureResponse, Registry>
+where
+    Body: WasiOutgoingBody,
+    FutureResponse: WasiFutureIncomingResponse<Pollable = PollableOf<Body::OutputStream>>,
+    Registry: PollableRegistry<Pollable = PollableOf<Body::OutputStream>>,
+{
+    body: OutgoingBody<Body, Registry>,
+    future_response: FutureIncomingResponse<FutureResponse, Registry>,
+}
+
+impl<Body, FutureResponse, Registry> ActiveOutgoingRequest<Body, FutureResponse, Registry>
+where
+    Body: WasiOutgoingBody,
+    FutureResponse: WasiFutureIncomingResponse<Pollable = PollableOf<Body::OutputStream>>,
+    Registry: PollableRegistry<Pollable = PollableOf<Body::OutputStream>>,
+{
+    pub fn body(&mut self) -> &mut OutgoingBody<Body, Registry> {
+        &mut self.body
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        OutgoingBody<Body, Registry>,
+        FutureIncomingResponse<FutureResponse, Registry>,
+    ) {
+        (self.body, self.future_response)
+    }
+}
+
+impl<OutgoingBody, IncomingBody, FutureResponse, Registry> IntoFuture
+    for ActiveOutgoingRequest<OutgoingBody, FutureResponse, Registry>
+where
+    OutgoingBody: WasiOutgoingBody,
+    FutureResponse: WasiFutureIncomingResponse<Pollable = PollableOf<OutgoingBody::OutputStream>>,
+    FutureResponse::IncomingResponse: WasiIncomingResponse<IncomingBody = IncomingBody>,
+    IncomingBody: WasiIncomingBody<Pollable = PollableOf<FutureResponse>>,
+    Registry: PollableRegistry<Pollable = PollableOf<OutgoingBody::OutputStream>>,
+{
+    type Output = Result<IncomingResponse<FutureResponse::IncomingResponse, Registry>, Error>;
+    type IntoFuture = FutureIncomingResponse<FutureResponse, Registry>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        self.future_response
+    }
+}
+
+pub struct FutureIncomingResponse<FutureResponse, Registry: PollableRegistry> {
+    inner: Subscribable<FutureResponse, Registry>,
+}
+
+impl<FutureResponse, IncomingBody, Registry> Future
+    for FutureIncomingResponse<FutureResponse, Registry>
+where
+    FutureResponse: WasiFutureIncomingResponse,
+    FutureResponse::IncomingResponse: WasiIncomingResponse<IncomingBody = IncomingBody>,
+    IncomingBody: WasiIncomingBody<Pollable = PollableOf<FutureResponse>>,
+    Registry: PollableRegistry<Pollable = PollableOf<FutureResponse>>,
+{
+    type Output = Result<IncomingResponse<FutureResponse::IncomingResponse, Registry>, Error>;
+
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.inner.get() {
+            Some(Ok(res)) => {
+                let response: <FutureResponse as WasiFutureIncomingResponse>::IncomingResponse =
+                    res.map_err(Error::wasi_error_code)?;
+                // FIXME: figure out proper type contraints to avoid this
+                let registry = self.inner.registry().clone();
+                Poll::Ready(Ok(IncomingResponse::new(response, registry.clone())?))
+            }
+            Some(Err(())) => Poll::Ready(Err(Error::WasiInvalidState(
+                "FutureIncomingResponse polled after completion",
+            ))),
+            None => {
+                self.inner.register_subscribe(cx);
+                Poll::Pending
+            }
+        }
     }
 }
 
@@ -377,12 +612,7 @@ pub struct FieldEntries(Vec<(String, Vec<u8>)>);
 
 impl FieldEntries {
     pub fn try_into_fields<Fields: WasiFields>(&self) -> Result<Fields, Error> {
-        let entries = self
-            .0
-            .iter()
-            .map(|(name, val)| (name, val))
-            .collect::<Vec<_>>();
-        Fields::from_list(&entries).map_err(|err| Error::WasiFieldsError(err.to_string()))
+        Fields::from_list(&self.0).map_err(|err| Error::WasiFieldsError(err.to_string()))
     }
 }
 

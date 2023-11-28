@@ -1,4 +1,4 @@
-#![allow(clippy::result_unit_err)]
+#![allow(clippy::result_unit_err, clippy::type_complexity)]
 
 use super::Method;
 use super::Scheme;
@@ -35,10 +35,12 @@ pub trait WasiInputStream: WasiSubscribe {
 }
 
 pub trait WasiOutputStream: WasiSubscribe {
+    type InputStream: WasiInputStream;
     type StreamError: WasiStreamError;
 
     fn check_write(&self) -> Result<u64, Self::StreamError>;
     fn write(&self, contents: &[u8]) -> Result<(), Self::StreamError>;
+    fn splice(&self, src: &Self::InputStream, len: u64) -> Result<u64, Self::StreamError>;
 }
 
 pub trait WasiErrorCode: std::error::Error + Unpin {}
@@ -62,7 +64,7 @@ pub trait WasiScheme: Unpin {
 pub trait WasiFields: Sized {
     type Error: std::error::Error + Unpin;
 
-    fn from_list(entries: &[(&String, &Vec<u8>)]) -> Result<Self, Self::Error>;
+    fn from_list(entries: &[(String, Vec<u8>)]) -> Result<Self, Self::Error>;
     fn entries(&self) -> Vec<(String, Vec<u8>)>;
 }
 
@@ -96,6 +98,22 @@ pub trait WasiIncomingRequest: Unpin {
     fn consume(&self) -> Result<Self::IncomingBody, ()>;
 }
 
+pub trait WasiIncomingResponse: Unpin {
+    type Headers: WasiFields;
+    type IncomingBody: WasiIncomingBody;
+
+    fn status(&self) -> u16;
+    fn headers(&self) -> Self::Headers;
+    fn consume(&self) -> Result<Self::IncomingBody, ()>;
+}
+
+pub trait WasiFutureIncomingResponse: WasiSubscribe {
+    type IncomingResponse: WasiIncomingResponse;
+    type ErrorCode: WasiErrorCode;
+
+    fn get(&self) -> Option<Result<Result<Self::IncomingResponse, Self::ErrorCode>, ()>>;
+}
+
 pub trait WasiOutgoingBody: Unpin {
     type OutputStream: WasiOutputStream;
     type Trailers: WasiFields;
@@ -103,6 +121,22 @@ pub trait WasiOutgoingBody: Unpin {
 
     fn write(&self) -> Result<Self::OutputStream, ()>;
     fn finish(self, trailers: Option<Self::Trailers>) -> Result<(), Self::ErrorCode>;
+}
+
+pub trait WasiOutgoingRequest: Unpin {
+    type Method: WasiMethod;
+    type Scheme: WasiScheme;
+    type Headers: WasiFields;
+    type OutgoingBody: WasiOutgoingBody;
+
+    fn new(headers: Self::Headers) -> Self
+    where
+        Self: Sized;
+    fn body(&self) -> Result<Self::OutgoingBody, ()>;
+    fn set_method(&self, method: &Self::Method) -> Result<(), ()>;
+    fn set_path_with_query(&self, path_with_query: Option<&str>) -> Result<(), ()>;
+    fn set_scheme(&self, scheme: Option<&Self::Scheme>) -> Result<(), ()>;
+    fn set_authority(&self, authority: Option<&str>) -> Result<(), ()>;
 }
 
 pub trait WasiOutgoingResponse: Unpin {
@@ -121,4 +155,15 @@ pub trait WasiResponseOutparam {
     type ErrorCode: WasiErrorCode;
 
     fn set(self, response: Result<Self::OutgoingResponse, &Self::ErrorCode>);
+}
+
+pub trait WasiOutgoingHandler: WasiOutgoingRequest + Sized {
+    type RequestOptions;
+    type FutureIncomingResponse: WasiFutureIncomingResponse;
+    type ErrorCode: WasiErrorCode;
+
+    fn handle(
+        self,
+        options: Option<Self::RequestOptions>,
+    ) -> Result<Self::FutureIncomingResponse, Self::ErrorCode>;
 }

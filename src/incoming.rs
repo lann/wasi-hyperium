@@ -1,4 +1,8 @@
-use std::task::{Context, Poll};
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use bytes::Bytes;
 
@@ -38,7 +42,7 @@ where
             panic!("poll_incoming_body called on non-body state")
         };
 
-        match incoming_body.stream().poll_read(READ_FRAME_SIZE, cx) {
+        match incoming_body.stream().poll_read(cx, READ_FRAME_SIZE) {
             Poll::Ready(Ok(data)) => Poll::Ready(Some(Ok(data.into()))),
             Poll::Ready(Err(Error::WasiStreamClosed)) => {
                 self.state = IncomingState::Trailers(self.take_body().finish());
@@ -56,7 +60,7 @@ where
         match &mut self.state {
             IncomingState::Empty => Poll::Ready(Ok(None)),
             IncomingState::Body { .. } => panic!("poll_trailers called before body completion"),
-            IncomingState::Trailers(trailers) => match trailers.poll_trailers(cx) {
+            IncomingState::Trailers(trailers) => match Pin::new(trailers).poll(cx) {
                 Poll::Ready(Ok(Some(trailers))) => {
                     self.state = IncomingState::Empty;
                     Poll::Ready(Ok(Some(trailers)))
