@@ -9,8 +9,8 @@ use crate::{
     outgoing::{Copied, OutgoingBodyCopier},
     poll::PollableRegistry,
     wasi::{
-        traits::{WasiOutgoingBody, WasiOutgoingRequest, WasiOutgoingResponse},
-        OutgoingBody, OutgoingRequest, OutgoingResponse, PollableOf,
+        traits::{WasiOutgoingBody, WasiOutgoingRequest, WasiOutgoingResponse, WasiOutputStream},
+        OutgoingBody, OutgoingRequest, OutgoingResponse,
     },
     Error,
 };
@@ -21,9 +21,9 @@ pub fn outgoing_request<B, Request, Registry>(
 ) -> Result<OutgoingRequest<Request, Registry>, Error>
 where
     Request: WasiOutgoingRequest,
-    Registry: PollableRegistry<
-        Pollable = PollableOf<<Request::OutgoingBody as WasiOutgoingBody>::OutputStream>,
-    >,
+    <Request::OutgoingBody as WasiOutgoingBody>::OutputStream:
+        WasiOutputStream<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     let mut req = OutgoingRequest::from_headers(&request.headers().into(), registry)?;
     req.set_method(request.method().into())?;
@@ -46,9 +46,9 @@ pub fn outgoing_response<B, Response, Registry>(
 ) -> Result<OutgoingResponse<Response, Registry>, Error>
 where
     Response: WasiOutgoingResponse,
-    Registry: PollableRegistry<
-        Pollable = PollableOf<<Response::OutgoingBody as WasiOutgoingBody>::OutputStream>,
-    >,
+    <Response::OutgoingBody as WasiOutgoingBody>::OutputStream:
+        WasiOutputStream<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     let mut outgoing = OutgoingResponse::from_headers(&resp.headers().into(), registry)?;
     outgoing.set_status_code(resp.status().as_u16())?;
@@ -70,7 +70,8 @@ impl<HttpBody, WasiBody, Registry> Hyperium1OutgoingBodyCopier<HttpBody, WasiBod
 where
     HttpBody: http_body1::Body,
     WasiBody: WasiOutgoingBody,
-    Registry: PollableRegistry<Pollable = PollableOf<WasiBody::OutputStream>>,
+    WasiBody::OutputStream: WasiOutputStream<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     pub fn new(src: HttpBody, dest: OutgoingBody<WasiBody, Registry>) -> Result<Self, Error> {
         Ok(Self {
@@ -87,8 +88,9 @@ where
     HttpBody: http_body1::Body + Unpin,
     anyhow::Error: From<HttpBody::Error>,
     WasiBody: WasiOutgoingBody,
+    WasiBody::OutputStream: WasiOutputStream<Pollable = Registry::Pollable>,
     WasiBody::Trailers: Sized,
-    Registry: PollableRegistry<Pollable = PollableOf<WasiBody::OutputStream>>,
+    Registry: PollableRegistry,
 {
     fn poll_copy(&mut self, cx: &mut Context) -> Poll<Option<Result<Copied, Error>>> {
         if self.dest.is_none() {

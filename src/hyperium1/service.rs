@@ -3,13 +3,13 @@ use std::{convert::Infallible, task::Context};
 use crate::{
     hyperium1::{incoming_request, outgoing_response},
     outgoing::OutgoingBodyCopier,
-    poll::{noop_waker, PollableRegistry, Poller},
+    poll::{noop_waker, PollableRegistry},
     wasi::{
         traits::{
-            WasiIncomingRequest, WasiOutgoingBody, WasiOutgoingResponse, WasiOutputStream,
-            WasiPoll, WasiResponseOutparam,
+            WasiIncomingBody, WasiIncomingRequest, WasiOutgoingBody, WasiOutgoingResponse,
+            WasiOutputStream, WasiResponseOutparam,
         },
-        IncomingRequestPollable, ResponseOutparam,
+        IncomingRequest, ResponseOutparam,
     },
     Error, IncomingHttpBody,
 };
@@ -21,48 +21,47 @@ pub fn handle_service_call<
     Request,
     Outparam,
     ResponseBody,
-    OutputStream,
-    OutgoingBody,
-    OutgoingResponse,
+    Registry,
 >(
     mut service: Service,
     request: Request,
     response_out: Outparam,
+    registry: Registry,
 ) -> Result<(), Error>
 where
     Service: tower_service::Service<
         http1::Request<
-            IncomingHttpBody<Request::IncomingBody, Poller<IncomingRequestPollable<Request>>>,
+            IncomingHttpBody<Request::IncomingBody, Registry>,
         >,
         Response = http1::Response<ResponseBody>,
         Error = Infallible,
     >,
-    IncomingRequestPollable<Request>: WasiPoll,
     ResponseBody: http_body1::Body + Unpin,
     ResponseBody::Data: Unpin,
     anyhow::Error: From<ResponseBody::Error>,
     Request: WasiIncomingRequest,
-    Outparam: WasiResponseOutparam<OutgoingResponse = OutgoingResponse>,
-    OutgoingResponse: WasiOutgoingResponse<OutgoingBody = OutgoingBody>,
-    OutgoingBody: WasiOutgoingBody<OutputStream = OutputStream>,
-    OutputStream: WasiOutputStream<Pollable = IncomingRequestPollable<Request>>,
+    Request::IncomingBody: WasiIncomingBody<Pollable = Registry::Pollable>,
+    Outparam: WasiResponseOutparam,
+    <<Outparam::OutgoingResponse as WasiOutgoingResponse>::OutgoingBody as WasiOutgoingBody>::OutputStream: WasiOutputStream<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
-    let poller = Poller::<IncomingRequestPollable<Request>>::default();
     let waker = noop_waker();
     let mut cx = Context::from_waker(&waker);
 
     while service.poll_ready(&mut cx).is_pending() {
-        if !poller.poll() {
+        if !registry.poll() {
             panic!("service never became ready");
         }
     }
 
-    let req = incoming_request(request, poller.clone())?;
-    let resp = poller.block_on(service.call(req)).unwrap().unwrap();
+    let incoming = IncomingRequest::new(request, registry.clone())?;
+    let req = incoming_request(incoming)?;
 
-    let outgoing = outgoing_response(&resp, poller.clone())?;
+    let resp = registry.block_on(service.call(req)).unwrap().unwrap();
+
+    let outgoing = outgoing_response(&resp, registry.clone())?;
     let dest = ResponseOutparam::new(response_out).set_response(outgoing);
 
     let copier = Hyperium1OutgoingBodyCopier::new(resp.into_body(), dest)?;
-    poller.block_on(copier.copy_all()).unwrap()
+    registry.block_on(copier.copy_all()).unwrap()
 }

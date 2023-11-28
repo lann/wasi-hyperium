@@ -19,9 +19,6 @@ pub fn handle_service_call<
     Request,
     Outparam,
     ResponseBody,
-    OutputStream,
-    OutgoingBody,
-    OutgoingResponse,
 >(
     mut service: Service,
     request: Request,
@@ -40,10 +37,8 @@ where
     ResponseBody::Data: Unpin,
     anyhow::Error: From<ResponseBody::Error>,
     Request: WasiIncomingRequest,
-    Outparam: WasiResponseOutparam<OutgoingResponse = OutgoingResponse>,
-    OutgoingResponse: WasiOutgoingResponse<OutgoingBody = OutgoingBody>,
-    OutgoingBody: WasiOutgoingBody<OutputStream = OutputStream>,
-    OutputStream: WasiOutputStream<Pollable = IncomingRequestPollable<Request>>,
+    Outparam: WasiResponseOutparam,
+    <<Outparam::OutgoingResponse as WasiOutgoingResponse>::OutgoingBody as WasiOutgoingBody>::OutputStream: WasiOutputStream<Pollable = IncomingRequestPollable<Request>>,
 {
     let poller = Poller::<IncomingRequestPollable<Request>>::default();
     let waker = noop_waker();

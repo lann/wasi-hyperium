@@ -15,8 +15,6 @@ use self::traits::{
 mod impl_2023_11_10;
 pub mod traits;
 
-pub type PollableOf<Subscribe> = <Subscribe as WasiSubscribe>::Pollable;
-
 struct Subscribable<T, Registry: PollableRegistry> {
     // NOTE: order matters; handle must be dropped before inner
     handle: Option<Registry::RegisteredPollable>,
@@ -26,8 +24,8 @@ struct Subscribable<T, Registry: PollableRegistry> {
 
 impl<T, Registry> Subscribable<T, Registry>
 where
-    T: WasiSubscribe,
-    Registry: PollableRegistry<Pollable = T::Pollable>,
+    T: WasiSubscribe<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     fn new(inner: T, registry: Registry) -> Self {
         Self {
@@ -177,8 +175,8 @@ pub struct IncomingBody<Body: WasiIncomingBody, Registry: PollableRegistry> {
 
 impl<Body, Registry> IncomingBody<Body, Registry>
 where
-    Body: WasiIncomingBody,
-    Registry: PollableRegistry<Pollable = PollableOf<Body::InputStream>>,
+    Body: WasiIncomingBody<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     pub fn new(body: Body, registry: Registry) -> Result<Self, Error> {
         let stream = InputStream::new(
@@ -226,18 +224,19 @@ where
     }
 }
 
+pub(crate) type IncomingRequestPollable<Request> =
+    <<Request as WasiIncomingRequest>::IncomingBody as WasiIncomingBody>::Pollable;
+
 pub struct IncomingRequest<Request: WasiIncomingRequest, Registry: PollableRegistry> {
     request: Request,
     body: IncomingBody<Request::IncomingBody, Registry>,
 }
 
-pub type IncomingRequestPollable<Request> =
-    PollableOf<<<Request as WasiIncomingRequest>::IncomingBody as WasiIncomingBody>::InputStream>;
-
 impl<Request, Registry> IncomingRequest<Request, Registry>
 where
     Request: WasiIncomingRequest,
-    Registry: PollableRegistry<Pollable = IncomingRequestPollable<Request>>,
+    Request::IncomingBody: WasiIncomingBody<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     pub fn new(request: Request, registry: Registry) -> Result<Self, Error> {
         let body = request
@@ -281,13 +280,11 @@ pub struct IncomingResponse<Response: WasiIncomingResponse, Registry: PollableRe
     body: IncomingBody<Response::IncomingBody, Registry>,
 }
 
-pub type IncomingResponsePollable<Response> =
-    PollableOf<<<Response as WasiIncomingResponse>::IncomingBody as WasiIncomingBody>::InputStream>;
-
 impl<Response, Registry> IncomingResponse<Response, Registry>
 where
     Response: WasiIncomingResponse,
-    Registry: PollableRegistry<Pollable = IncomingResponsePollable<Response>>,
+    Response::IncomingBody: WasiIncomingBody<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     pub fn new(response: Response, registry: Registry) -> Result<Self, Error> {
         let body = response
@@ -323,7 +320,8 @@ pub struct OutgoingBody<Body: WasiOutgoingBody, Registry: PollableRegistry> {
 impl<Body, Registry> OutgoingBody<Body, Registry>
 where
     Body: WasiOutgoingBody,
-    Registry: PollableRegistry<Pollable = PollableOf<Body::OutputStream>>,
+    Body::OutputStream: WasiOutputStream<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     pub fn new(body: Body, registry: Registry) -> Result<Self, Error> {
         let stream = OutputStream::new(
@@ -357,13 +355,12 @@ pub struct OutgoingRequest<Request: WasiOutgoingRequest, Registry: PollableRegis
     body: OutgoingBody<Request::OutgoingBody, Registry>,
 }
 
-pub type OutgoingRequestPollable<Request> =
-    PollableOf<<<Request as WasiOutgoingRequest>::OutgoingBody as WasiOutgoingBody>::OutputStream>;
-
 impl<Request, Registry> OutgoingRequest<Request, Registry>
 where
     Request: WasiOutgoingRequest,
-    Registry: PollableRegistry<Pollable = OutgoingRequestPollable<Request>>,
+    <Request::OutgoingBody as WasiOutgoingBody>::OutputStream:
+        WasiOutputStream<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     pub fn new(request: Request, registry: Registry) -> Result<Self, Error> {
         let body = request
@@ -408,9 +405,10 @@ where
 impl<Request, Registry> OutgoingRequest<Request, Registry>
 where
     Request: WasiOutgoingHandler,
-    Request::FutureIncomingResponse:
-        WasiFutureIncomingResponse<Pollable = OutgoingRequestPollable<Request>>,
-    Registry: PollableRegistry<Pollable = OutgoingRequestPollable<Request>>,
+    Request::FutureIncomingResponse: WasiFutureIncomingResponse<Pollable = Registry::Pollable>,
+    <Request::OutgoingBody as WasiOutgoingBody>::OutputStream:
+        WasiOutputStream<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     pub fn send(
         self,
@@ -433,8 +431,8 @@ where
 pub struct ActiveOutgoingRequest<Body, FutureResponse, Registry>
 where
     Body: WasiOutgoingBody,
-    FutureResponse: WasiFutureIncomingResponse<Pollable = PollableOf<Body::OutputStream>>,
-    Registry: PollableRegistry<Pollable = PollableOf<Body::OutputStream>>,
+    FutureResponse: WasiFutureIncomingResponse<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     body: OutgoingBody<Body, Registry>,
     future_response: FutureIncomingResponse<FutureResponse, Registry>,
@@ -443,8 +441,8 @@ where
 impl<Body, FutureResponse, Registry> ActiveOutgoingRequest<Body, FutureResponse, Registry>
 where
     Body: WasiOutgoingBody,
-    FutureResponse: WasiFutureIncomingResponse<Pollable = PollableOf<Body::OutputStream>>,
-    Registry: PollableRegistry<Pollable = PollableOf<Body::OutputStream>>,
+    FutureResponse: WasiFutureIncomingResponse<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     pub fn body(&mut self) -> &mut OutgoingBody<Body, Registry> {
         &mut self.body
@@ -460,14 +458,14 @@ where
     }
 }
 
-impl<OutgoingBody, IncomingBody, FutureResponse, Registry> IntoFuture
+impl<OutgoingBody, FutureResponse, Registry> IntoFuture
     for ActiveOutgoingRequest<OutgoingBody, FutureResponse, Registry>
 where
     OutgoingBody: WasiOutgoingBody,
-    FutureResponse: WasiFutureIncomingResponse<Pollable = PollableOf<OutgoingBody::OutputStream>>,
-    FutureResponse::IncomingResponse: WasiIncomingResponse<IncomingBody = IncomingBody>,
-    IncomingBody: WasiIncomingBody<Pollable = PollableOf<FutureResponse>>,
-    Registry: PollableRegistry<Pollable = PollableOf<OutgoingBody::OutputStream>>,
+    FutureResponse: WasiFutureIncomingResponse<Pollable = Registry::Pollable>,
+    <FutureResponse::IncomingResponse as WasiIncomingResponse>::IncomingBody:
+        WasiIncomingBody<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     type Output = Result<IncomingResponse<FutureResponse::IncomingResponse, Registry>, Error>;
     type IntoFuture = FutureIncomingResponse<FutureResponse, Registry>;
@@ -481,13 +479,12 @@ pub struct FutureIncomingResponse<FutureResponse, Registry: PollableRegistry> {
     inner: Subscribable<FutureResponse, Registry>,
 }
 
-impl<FutureResponse, IncomingBody, Registry> Future
-    for FutureIncomingResponse<FutureResponse, Registry>
+impl<FutureResponse, Registry> Future for FutureIncomingResponse<FutureResponse, Registry>
 where
-    FutureResponse: WasiFutureIncomingResponse,
-    FutureResponse::IncomingResponse: WasiIncomingResponse<IncomingBody = IncomingBody>,
-    IncomingBody: WasiIncomingBody<Pollable = PollableOf<FutureResponse>>,
-    Registry: PollableRegistry<Pollable = PollableOf<FutureResponse>>,
+    FutureResponse: WasiFutureIncomingResponse<Pollable = Registry::Pollable>,
+    <FutureResponse::IncomingResponse as WasiIncomingResponse>::IncomingBody:
+        WasiIncomingBody<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     type Output = Result<IncomingResponse<FutureResponse::IncomingResponse, Registry>, Error>;
 
@@ -516,14 +513,12 @@ pub struct OutgoingResponse<Response: WasiOutgoingResponse, Registry: PollableRe
     body: OutgoingBody<Response::OutgoingBody, Registry>,
 }
 
-pub type OutgoingResponsePollable<Response> = PollableOf<
-    <<Response as WasiOutgoingResponse>::OutgoingBody as WasiOutgoingBody>::OutputStream,
->;
-
 impl<Response, Registry> OutgoingResponse<Response, Registry>
 where
     Response: WasiOutgoingResponse,
-    Registry: PollableRegistry<Pollable = OutgoingResponsePollable<Response>>,
+    <Response::OutgoingBody as WasiOutgoingBody>::OutputStream:
+        WasiOutputStream<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     pub fn new(response: Response, registry: Registry) -> Result<Self, Error> {
         let body = response
@@ -575,7 +570,9 @@ where
         response: OutgoingResponse<Outparam::OutgoingResponse, Registry>,
     ) -> OutgoingBody<<Outparam::OutgoingResponse as WasiOutgoingResponse>::OutgoingBody, Registry>
     where
-        Registry: PollableRegistry<Pollable = OutgoingResponsePollable<Outparam::OutgoingResponse>>,
+        <<Outparam::OutgoingResponse as WasiOutgoingResponse>::OutgoingBody as WasiOutgoingBody>::OutputStream:
+            WasiOutputStream<Pollable = Registry::Pollable>,
+        Registry: PollableRegistry,
     {
         let (wasi_response, body) = response.into_parts();
         self.outparam.set(Ok(wasi_response));

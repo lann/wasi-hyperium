@@ -6,7 +6,7 @@ use crate::{
     incoming::{IncomingHttpBody, IncomingState},
     poll::PollableRegistry,
     wasi::traits::WasiIncomingBody,
-    wasi::{traits::WasiIncomingRequest, IncomingRequest, PollableOf},
+    wasi::{traits::WasiIncomingRequest, IncomingRequest},
     Error,
 };
 
@@ -16,9 +16,8 @@ pub fn incoming_request<Request, Registry>(
 ) -> Result<http0::Request<IncomingHttpBody<Request::IncomingBody, Registry>>, Error>
 where
     Request: WasiIncomingRequest,
-    Registry: PollableRegistry<
-        Pollable = PollableOf<<Request::IncomingBody as WasiIncomingBody>::InputStream>,
-    >,
+    Request::IncomingBody: WasiIncomingBody<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     let req = IncomingRequest::new(request, registry)?;
     let uri = {
@@ -43,8 +42,8 @@ where
 
 impl<IncomingBody, Registry> http_body0::Body for IncomingHttpBody<IncomingBody, Registry>
 where
-    IncomingBody: WasiIncomingBody,
-    Registry: PollableRegistry<Pollable = IncomingBody::Pollable>,
+    IncomingBody: WasiIncomingBody<Pollable = Registry::Pollable>,
+    Registry: PollableRegistry,
 {
     type Data = Bytes;
     type Error = Error;
