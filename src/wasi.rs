@@ -196,6 +196,7 @@ where
     pub fn finish(self) -> FutureTrailers<Body::FutureTrailers, Registry> {
         let Self { stream, body } = self;
         let registry = stream.registry().clone();
+        drop(stream);
         let trailers = Subscribable::new(body.finish(), registry);
         FutureTrailers { trailers }
     }
