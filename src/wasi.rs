@@ -8,7 +8,7 @@ use crate::{poll::PollableRegistry, Error};
 use self::traits::{
     WasiFields, WasiFutureIncomingResponse, WasiFutureTrailers, WasiIncomingBody,
     WasiIncomingRequest, WasiIncomingResponse, WasiInputStream, WasiMethod, WasiOutgoingBody,
-    WasiOutgoingHandler, WasiOutgoingRequest, WasiOutgoingResponse, WasiOutputStream,
+    WasiOutgoingHandler, WasiOutgoingRequest, WasiOutgoingResponse, WasiOutputStream, WasiPollable,
     WasiResponseOutparam, WasiScheme, WasiSubscribe,
 };
 
@@ -38,6 +38,16 @@ where
     fn register_subscribe(&mut self, cx: &mut Context) {
         let pollable = self.inner.subscribe();
         self.handle = Some(self.registry.register_pollable(cx, pollable));
+    }
+
+    fn maybe_subscribe(&mut self, cx: &mut Context) -> Poll<()> {
+        let pollable = self.inner.subscribe();
+        if pollable.ready() {
+            Poll::Ready(())
+        } else {
+            self.handle = Some(self.registry.register_pollable(cx, pollable));
+            Poll::Pending
+        }
     }
 
     fn registry(&self) -> &Registry {
@@ -137,6 +147,11 @@ where
         } else {
             Poll::Ready(Ok(size))
         }
+    }
+
+    pub fn poll_flush(&mut self, cx: &mut Context) -> Poll<Result<(), Error>> {
+        self.stream.flush().map_err(Error::wasi_stream_error)?;
+        self.stream.maybe_subscribe(cx).map(|()| Ok(()))
     }
 
     fn registry(&self) -> &Registry {

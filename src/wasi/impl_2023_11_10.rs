@@ -9,6 +9,10 @@ macro_rules! impl_wasi_2023_11_10 {
                 fn handle(&self) -> u32 {
                     self.handle()
                 }
+
+                fn ready(&self) -> bool {
+                    self.ready()
+                }
             }
 
             impl traits::WasiPoll for wasi::io::poll::Pollable {
@@ -68,6 +72,10 @@ macro_rules! impl_wasi_2023_11_10 {
                     len: u64,
                 ) -> Result<u64, Self::StreamError> {
                     self.splice(src, len)
+                }
+
+                fn flush(&self) -> Result<(), Self::StreamError> {
+                    self.flush()
                 }
             }
             impl traits::WasiSubscribe for wasi::io::streams::OutputStream {

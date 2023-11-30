@@ -6,6 +6,7 @@ use super::StreamError;
 
 pub trait WasiPollable: Unpin {
     fn handle(&self) -> u32;
+    fn ready(&self) -> bool;
 }
 
 pub trait WasiPoll: WasiPollable {
@@ -41,6 +42,7 @@ pub trait WasiOutputStream: WasiSubscribe {
     fn check_write(&self) -> Result<u64, Self::StreamError>;
     fn write(&self, contents: &[u8]) -> Result<(), Self::StreamError>;
     fn splice(&self, src: &Self::InputStream, len: u64) -> Result<u64, Self::StreamError>;
+    fn flush(&self) -> Result<(), Self::StreamError>;
 }
 
 pub trait WasiErrorCode: std::error::Error + Unpin {}
