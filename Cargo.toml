@@ -21,4 +21,4 @@ http-body1 = { version = "1.0.0", package = "http-body", optional = true }
 tower-service = { version = "0.3.2", optional = true }
 
 [dev-dependencies]
-wit-bindgen = "0.14.0"
+wit-bindgen = "0.16.0"

@@ -83,7 +83,7 @@ pub trait WasiFutureTrailers: WasiSubscribe {
     type Trailers: WasiFields;
     type ErrorCode: WasiErrorCode;
 
-    fn get(&self) -> Option<Result<Option<Self::Trailers>, Self::ErrorCode>>;
+    fn get(&self) -> Option<Result<Result<Option<Self::Trailers>, Self::ErrorCode>, ()>>;
 }
 
 pub trait WasiIncomingRequest: Unpin {
