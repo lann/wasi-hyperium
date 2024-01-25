@@ -21,7 +21,7 @@ wit_bindgen::generate!({
     },
 });
 
-wasi_hyperium::impl_wasi_2023_11_10!(wasi);
+wasi_hyperium::impl_wasi_preview2!(wasi);
 
 struct Guest;
 

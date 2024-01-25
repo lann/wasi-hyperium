@@ -10,4 +10,4 @@ crate-type = ["cdylib"]
 axum = { version = "0.7.1", default-features = false, features = ["macros"] }
 tower-service = "0.3.2"
 wasi-hyperium = { path = "../.." }
-wit-bindgen = "0.14.0"
+wit-bindgen = "0.16.0"

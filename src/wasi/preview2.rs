@@ -1,7 +1,7 @@
 #[macro_export]
-macro_rules! impl_wasi_2023_11_10 {
+macro_rules! impl_wasi_preview2 {
     ($wasi_module_path:tt) => {
-        mod impl_wasi_traits_2023_11_10 {
+        mod impl_wasi_traits_preview2 {
             use super::$wasi_module_path as wasi;
             use $crate::wasi::{traits, StreamError};
 
@@ -177,7 +177,9 @@ macro_rules! impl_wasi_2023_11_10 {
                 type Trailers = wasi::http::types::Trailers;
                 type ErrorCode = wasi::http::types::ErrorCode;
 
-                fn get(&self) -> Option<Result<Option<Self::Trailers>, Self::ErrorCode>> {
+                fn get(
+                    &self,
+                ) -> Option<Result<Result<Option<Self::Trailers>, Self::ErrorCode>, ()>> {
                     self.get()
                 }
             }
@@ -353,7 +355,7 @@ mod type_check_macro {
     wit_bindgen::generate!({
         world: "test",
     });
-    impl_wasi_2023_11_10!(wasi);
+    impl_wasi_preview2!(wasi);
 
     #[allow(unused_imports)]
     use crate::wasi::traits;

@@ -12,7 +12,7 @@ use self::traits::{
     WasiResponseOutparam, WasiScheme, WasiSubscribe,
 };
 
-mod impl_2023_11_10;
+mod preview2;
 pub mod traits;
 
 struct Subscribable<T, Registry: PollableRegistry> {
@@ -228,9 +228,12 @@ where
 
     fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.trailers.get() {
-            Some(Ok(Some(fields))) => Poll::Ready(Ok(Some(fields.into()))),
-            Some(Ok(None)) => Poll::Ready(Ok(None)),
-            Some(Err(err)) => Poll::Ready(Err(Error::wasi_error_code(err))),
+            Some(Ok(Ok(Some(fields)))) => Poll::Ready(Ok(Some(fields.into()))),
+            Some(Ok(Ok(None))) => Poll::Ready(Ok(None)),
+            Some(Ok(Err(err))) => Poll::Ready(Err(Error::wasi_error_code(err))),
+            Some(Err(())) => Poll::Ready(Err(Error::WasiInvalidState(
+                "future-trailers.get already consumed",
+            ))),
             None => {
                 self.trailers.register_subscribe(cx);
                 Poll::Pending
