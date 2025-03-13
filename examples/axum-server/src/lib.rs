@@ -8,7 +8,7 @@ use axum::{
 };
 use wasi::http::types::{IncomingRequest, ResponseOutparam};
 use wasi_hyperium::{
-    hyperium1::{handle_service_call, send_request},
+    hyperium1::{handle_service_call, send_outbound_request},
     poll::Poller,
 };
 
@@ -38,6 +38,6 @@ async fn proxy_example_com(State(poller): State<Poller>) -> impl IntoResponse {
     let req = Request::get("https://example.com")
         .body(Body::empty())
         .unwrap();
-    let resp = send_request(req, poller).unwrap();
+    let resp = send_outbound_request(req, poller).await.unwrap();
     Body::new(resp.into_body())
 }

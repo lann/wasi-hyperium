@@ -5,7 +5,7 @@ mod service;
 
 pub use incoming::{incoming_request, incoming_response};
 pub use outgoing::{outgoing_request, outgoing_response, Hyperium1OutgoingBodyCopier};
-pub use send::send_request;
+pub use send::{block_on_outbound_request, send_outbound_request};
 pub use service::handle_service_call;
 
 use crate::wasi::{FieldEntries, Method, Scheme};
