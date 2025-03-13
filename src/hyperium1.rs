@@ -83,7 +83,7 @@ impl TryFrom<FieldEntries> for http1::HeaderMap {
 
 impl From<http1::HeaderMap> for FieldEntries {
     fn from(map: http1::HeaderMap) -> Self {
-        map.into()
+        (&map).into()
     }
 }
 

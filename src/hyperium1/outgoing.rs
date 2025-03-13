@@ -8,21 +8,15 @@ use bytes::Buf;
 use crate::{
     outgoing::{Copied, OutgoingBodyCopier},
     poll::PollableRegistry,
-    wasi::{
-        traits::{WasiOutgoingBody, WasiOutgoingRequest, WasiOutgoingResponse, WasiOutputStream},
-        OutgoingBody, OutgoingRequest, OutgoingResponse,
-    },
+    wasi::{OutgoingBody, OutgoingRequest, OutgoingResponse},
     Error,
 };
 
-pub fn outgoing_request<B, Request, Registry>(
+pub fn outgoing_request<B, Registry>(
     request: &http1::Request<B>,
     registry: Registry,
-) -> Result<OutgoingRequest<Request, Registry>, Error>
+) -> Result<OutgoingRequest<Registry>, Error>
 where
-    Request: WasiOutgoingRequest,
-    <Request::OutgoingBody as WasiOutgoingBody>::OutputStream:
-        WasiOutputStream<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
     let mut req = OutgoingRequest::from_headers(&request.headers().into(), registry)?;
@@ -40,14 +34,11 @@ where
     Ok(req)
 }
 
-pub fn outgoing_response<B, Response, Registry>(
+pub fn outgoing_response<B, Registry>(
     resp: &http1::Response<B>,
     registry: Registry,
-) -> Result<OutgoingResponse<Response, Registry>, Error>
+) -> Result<OutgoingResponse<Registry>, Error>
 where
-    Response: WasiOutgoingResponse,
-    <Response::OutgoingBody as WasiOutgoingBody>::OutputStream:
-        WasiOutputStream<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
     let mut outgoing = OutgoingResponse::from_headers(&resp.headers().into(), registry)?;
@@ -55,25 +46,22 @@ where
     Ok(outgoing)
 }
 
-pub struct Hyperium1OutgoingBodyCopier<HttpBody, WasiBody, Registry>
+pub struct Hyperium1OutgoingBodyCopier<HttpBody, Registry>
 where
     HttpBody: http_body1::Body,
-    WasiBody: WasiOutgoingBody,
     Registry: PollableRegistry,
 {
     src: HttpBody,
-    dest: Option<OutgoingBody<WasiBody, Registry>>,
+    dest: Option<OutgoingBody<Registry>>,
     buf: Option<HttpBody::Data>,
 }
 
-impl<HttpBody, WasiBody, Registry> Hyperium1OutgoingBodyCopier<HttpBody, WasiBody, Registry>
+impl<HttpBody, Registry> Hyperium1OutgoingBodyCopier<HttpBody, Registry>
 where
     HttpBody: http_body1::Body,
-    WasiBody: WasiOutgoingBody,
-    WasiBody::OutputStream: WasiOutputStream<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
-    pub fn new(src: HttpBody, dest: OutgoingBody<WasiBody, Registry>) -> Result<Self, Error> {
+    pub fn new(src: HttpBody, dest: OutgoingBody<Registry>) -> Result<Self, Error> {
         Ok(Self {
             src,
             dest: Some(dest),
@@ -82,14 +70,10 @@ where
     }
 }
 
-impl<HttpBody, WasiBody, Registry> OutgoingBodyCopier
-    for Hyperium1OutgoingBodyCopier<HttpBody, WasiBody, Registry>
+impl<HttpBody, Registry> OutgoingBodyCopier for Hyperium1OutgoingBodyCopier<HttpBody, Registry>
 where
     HttpBody: http_body1::Body + Unpin,
     anyhow::Error: From<HttpBody::Error>,
-    WasiBody: WasiOutgoingBody,
-    WasiBody::OutputStream: WasiOutputStream<Pollable = Registry::Pollable>,
-    WasiBody::Trailers: Sized,
     Registry: PollableRegistry,
 {
     fn poll_copy(&mut self, cx: &mut Context) -> Poll<Option<Result<Copied, Error>>> {

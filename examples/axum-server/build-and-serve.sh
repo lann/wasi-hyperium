@@ -9,7 +9,7 @@ adapter_url="https://github.com/bytecodealliance/wasmtime/releases/download/v17.
 cargo build --release
 
 wasm-tools component new \
-	target/wasm32-wasi/release/axum_server.wasm \
+	target/wasm32-wasip1/release/axum_server.wasm \
 	--adapt $adapter_file \
 	-o server.wasm
 

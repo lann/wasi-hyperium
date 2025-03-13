@@ -3,17 +3,12 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{poll::PollableRegistry, Error};
+use wasi::http::types;
 
-use self::traits::{
-    WasiFields, WasiFutureIncomingResponse, WasiFutureTrailers, WasiIncomingBody,
-    WasiIncomingRequest, WasiIncomingResponse, WasiInputStream, WasiMethod, WasiOutgoingBody,
-    WasiOutgoingHandler, WasiOutgoingRequest, WasiOutgoingResponse, WasiOutputStream, WasiPollable,
-    WasiResponseOutparam, WasiScheme, WasiSubscribe,
+use crate::{
+    poll::{PollableRegistry, WasiSubscribe},
+    Error,
 };
-
-mod preview2;
-pub mod traits;
 
 struct Subscribable<T, Registry: PollableRegistry> {
     // NOTE: order matters; handle must be dropped before inner
@@ -24,7 +19,7 @@ struct Subscribable<T, Registry: PollableRegistry> {
 
 impl<T, Registry> Subscribable<T, Registry>
 where
-    T: WasiSubscribe<Pollable = Registry::Pollable>,
+    T: WasiSubscribe,
     Registry: PollableRegistry,
 {
     fn new(inner: T, registry: Registry) -> Self {
@@ -63,16 +58,15 @@ impl<T, Registry: PollableRegistry> std::ops::Deref for Subscribable<T, Registry
     }
 }
 
-pub struct InputStream<Stream, Registry: PollableRegistry> {
-    stream: Subscribable<Stream, Registry>,
+pub struct InputStream<Registry: PollableRegistry> {
+    stream: Subscribable<types::InputStream, Registry>,
 }
 
-impl<Stream, Registry> InputStream<Stream, Registry>
+impl<Registry> InputStream<Registry>
 where
-    Stream: WasiInputStream,
-    Registry: PollableRegistry<Pollable = Stream::Pollable>,
+    Registry: PollableRegistry,
 {
-    pub fn new(stream: Stream, registry: Registry) -> Self {
+    pub fn new(stream: types::InputStream, registry: Registry) -> Self {
         let stream = Subscribable::new(stream, registry);
         Self { stream }
     }
@@ -95,16 +89,15 @@ where
     }
 }
 
-pub struct OutputStream<Stream, Registry: PollableRegistry> {
-    stream: Subscribable<Stream, Registry>,
+pub struct OutputStream<Registry: PollableRegistry> {
+    stream: Subscribable<types::OutputStream, Registry>,
 }
 
-impl<Stream, Registry> OutputStream<Stream, Registry>
+impl<Registry> OutputStream<Registry>
 where
-    Stream: WasiOutputStream,
-    Registry: PollableRegistry<Pollable = Stream::Pollable>,
+    Registry: PollableRegistry,
 {
-    pub fn new(stream: Stream, registry: Registry) -> Self {
+    pub fn new(stream: types::OutputStream, registry: Registry) -> Self {
         let stream = Subscribable::new(stream, registry);
         Self { stream }
     }
@@ -112,7 +105,7 @@ where
     pub fn poll_check_write(
         &mut self,
         cx: &mut Context,
-    ) -> Poll<Result<OutputStreamPermit<Stream>, Error>> {
+    ) -> Poll<Result<OutputStreamPermit, Error>> {
         let size = self
             .stream
             .check_write()
@@ -131,7 +124,7 @@ where
     pub fn poll_splice(
         &mut self,
         cx: &mut Context,
-        src: &InputStream<Stream::InputStream, Registry>,
+        src: &InputStream<Registry>,
         len: u64,
     ) -> Poll<Result<u64, Error>> {
         if len == 0 {
@@ -159,12 +152,12 @@ where
     }
 }
 
-pub struct OutputStreamPermit<'a, Stream> {
-    stream: &'a Stream,
+pub struct OutputStreamPermit<'a> {
+    stream: &'a types::OutputStream,
     size: u64,
 }
 
-impl<'a, Stream: WasiOutputStream> OutputStreamPermit<'a, Stream> {
+impl OutputStreamPermit<'_> {
     pub fn write(self, contents: &[u8]) -> Result<usize, Error> {
         let len = self
             .size
@@ -182,18 +175,17 @@ impl<'a, Stream: WasiOutputStream> OutputStreamPermit<'a, Stream> {
     }
 }
 
-pub struct IncomingBody<Body: WasiIncomingBody, Registry: PollableRegistry> {
+pub struct IncomingBody<Registry: PollableRegistry> {
     // NOTE: order matters; stream must be dropped before body
-    stream: InputStream<Body::InputStream, Registry>,
-    body: Body,
+    stream: InputStream<Registry>,
+    body: types::IncomingBody,
 }
 
-impl<Body, Registry> IncomingBody<Body, Registry>
+impl<Registry> IncomingBody<Registry>
 where
-    Body: WasiIncomingBody<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
-    pub fn new(body: Body, registry: Registry) -> Result<Self, Error> {
+    pub fn new(body: types::IncomingBody, registry: Registry) -> Result<Self, Error> {
         let stream = InputStream::new(
             body.stream()
                 .map_err(|()| Error::WasiInvalidState("incoming-body.stream already called"))?,
@@ -202,27 +194,27 @@ where
         Ok(Self { stream, body })
     }
 
-    pub fn stream(&mut self) -> &mut InputStream<Body::InputStream, Registry> {
+    pub fn stream(&mut self) -> &mut InputStream<Registry> {
         &mut self.stream
     }
 
-    pub fn finish(self) -> FutureTrailers<Body::FutureTrailers, Registry> {
+    pub fn finish(self) -> FutureTrailers<Registry> {
         let Self { stream, body } = self;
         let registry = stream.registry().clone();
         drop(stream);
-        let trailers = Subscribable::new(body.finish(), registry);
+        let wasi_trailers = types::IncomingBody::finish(body);
+        let trailers = Subscribable::new(wasi_trailers, registry);
         FutureTrailers { trailers }
     }
 }
 
-pub struct FutureTrailers<Trailers, Registry: PollableRegistry> {
-    trailers: Subscribable<Trailers, Registry>,
+pub struct FutureTrailers<Registry: PollableRegistry> {
+    trailers: Subscribable<types::FutureTrailers, Registry>,
 }
 
-impl<Trailers, Registry> Future for FutureTrailers<Trailers, Registry>
+impl<Registry> Future for FutureTrailers<Registry>
 where
-    Trailers: WasiFutureTrailers,
-    Registry: PollableRegistry<Pollable = Trailers::Pollable>,
+    Registry: PollableRegistry,
 {
     type Output = Result<Option<FieldEntries>, Error>;
 
@@ -242,21 +234,91 @@ where
     }
 }
 
-pub(crate) type IncomingRequestPollable<Request> =
-    <<Request as WasiIncomingRequest>::IncomingBody as WasiIncomingBody>::Pollable;
-
-pub struct IncomingRequest<Request: WasiIncomingRequest, Registry: PollableRegistry> {
-    request: Request,
-    body: IncomingBody<Request::IncomingBody, Registry>,
+#[derive(Debug)]
+pub enum Method {
+    Get,
+    Head,
+    Post,
+    Put,
+    Delete,
+    Connect,
+    Options,
+    Trace,
+    Patch,
+    Other(String),
 }
 
-impl<Request, Registry> IncomingRequest<Request, Registry>
+impl From<Method> for types::Method {
+    fn from(method: Method) -> Self {
+        match method {
+            Method::Get => Self::Get,
+            Method::Head => Self::Head,
+            Method::Post => Self::Post,
+            Method::Put => Self::Put,
+            Method::Delete => Self::Delete,
+            Method::Connect => Self::Connect,
+            Method::Options => Self::Options,
+            Method::Trace => Self::Trace,
+            Method::Patch => Self::Patch,
+            Method::Other(other) => Self::Other(other),
+        }
+    }
+}
+
+impl From<types::Method> for Method {
+    fn from(method: types::Method) -> Self {
+        match method {
+            types::Method::Get => Self::Get,
+            types::Method::Head => Self::Head,
+            types::Method::Post => Self::Post,
+            types::Method::Put => Self::Put,
+            types::Method::Delete => Self::Delete,
+            types::Method::Connect => Self::Connect,
+            types::Method::Options => Self::Options,
+            types::Method::Trace => Self::Trace,
+            types::Method::Patch => Self::Patch,
+            types::Method::Other(other) => Self::Other(other),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum Scheme {
+    Http,
+    Https,
+    Other(String),
+}
+
+impl From<Scheme> for types::Scheme {
+    fn from(scheme: Scheme) -> Self {
+        match scheme {
+            Scheme::Http => Self::Http,
+            Scheme::Https => Self::Https,
+            Scheme::Other(other) => Self::Other(other),
+        }
+    }
+}
+
+impl From<types::Scheme> for Scheme {
+    fn from(scheme: types::Scheme) -> Self {
+        match scheme {
+            types::Scheme::Http => Self::Http,
+            types::Scheme::Https => Self::Https,
+            types::Scheme::Other(other) => Self::Other(other),
+        }
+    }
+}
+
+pub struct IncomingRequest<Registry: PollableRegistry> {
+    request: types::IncomingRequest,
+    body: IncomingBody<Registry>,
+}
+
+impl<Registry> IncomingRequest<Registry>
 where
-    Request: WasiIncomingRequest,
-    Request::IncomingBody: WasiIncomingBody<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
-    pub fn new(request: Request, registry: Registry) -> Result<Self, Error> {
+    pub fn new(request: types::IncomingRequest, registry: Registry) -> Result<Self, Error> {
         let body = request
             .consume()
             .map_err(|()| Error::WasiInvalidState("incoming-request.consume already called"))?;
@@ -265,7 +327,7 @@ where
     }
 
     pub fn method(&self) -> Method {
-        self.request.method().into_method()
+        self.request.method().into()
     }
 
     pub fn path_with_query(&self) -> Option<String> {
@@ -273,7 +335,7 @@ where
     }
 
     pub fn scheme(&self) -> Option<Scheme> {
-        self.request.scheme().map(|scheme| scheme.into_scheme())
+        self.request.scheme().map(Into::into)
     }
 
     pub fn authority(&self) -> Option<String> {
@@ -284,27 +346,25 @@ where
         self.request.headers().into()
     }
 
-    pub fn body(&mut self) -> &mut IncomingBody<Request::IncomingBody, Registry> {
+    pub fn body(&mut self) -> &mut IncomingBody<Registry> {
         &mut self.body
     }
 
-    pub fn into_body(self) -> IncomingBody<Request::IncomingBody, Registry> {
+    pub fn into_body(self) -> IncomingBody<Registry> {
         self.body
     }
 }
 
-pub struct IncomingResponse<Response: WasiIncomingResponse, Registry: PollableRegistry> {
-    response: Response,
-    body: IncomingBody<Response::IncomingBody, Registry>,
+pub struct IncomingResponse<Registry: PollableRegistry> {
+    response: types::IncomingResponse,
+    body: IncomingBody<Registry>,
 }
 
-impl<Response, Registry> IncomingResponse<Response, Registry>
+impl<Registry> IncomingResponse<Registry>
 where
-    Response: WasiIncomingResponse,
-    Response::IncomingBody: WasiIncomingBody<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
-    pub fn new(response: Response, registry: Registry) -> Result<Self, Error> {
+    pub fn new(response: types::IncomingResponse, registry: Registry) -> Result<Self, Error> {
         let body = response
             .consume()
             .map_err(|()| Error::WasiInvalidState("incoming-response.consume already called"))?;
@@ -320,28 +380,26 @@ where
         self.response.headers().into()
     }
 
-    pub fn body(&mut self) -> &mut IncomingBody<Response::IncomingBody, Registry> {
+    pub fn body(&mut self) -> &mut IncomingBody<Registry> {
         &mut self.body
     }
 
-    pub fn into_body(self) -> IncomingBody<Response::IncomingBody, Registry> {
+    pub fn into_body(self) -> IncomingBody<Registry> {
         self.body
     }
 }
 
-pub struct OutgoingBody<Body: WasiOutgoingBody, Registry: PollableRegistry> {
+pub struct OutgoingBody<Registry: PollableRegistry> {
     // NOTE: order matters; stream must be dropped before body
-    stream: OutputStream<Body::OutputStream, Registry>,
-    body: Body,
+    stream: OutputStream<Registry>,
+    body: types::OutgoingBody,
 }
 
-impl<Body, Registry> OutgoingBody<Body, Registry>
+impl<Registry> OutgoingBody<Registry>
 where
-    Body: WasiOutgoingBody,
-    Body::OutputStream: WasiOutputStream<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
-    pub fn new(body: Body, registry: Registry) -> Result<Self, Error> {
+    pub fn new(body: types::OutgoingBody, registry: Registry) -> Result<Self, Error> {
         let stream = OutputStream::new(
             body.write()
                 .map_err(|()| Error::WasiInvalidState("outgoing-body.write already called"))?,
@@ -350,17 +408,17 @@ where
         Ok(Self { stream, body })
     }
 
-    pub fn stream(&mut self) -> &mut OutputStream<Body::OutputStream, Registry> {
+    pub fn stream(&mut self) -> &mut OutputStream<Registry> {
         &mut self.stream
     }
 
     pub fn finish(self, trailers: Option<FieldEntries>) -> Result<(), Error> {
-        let trailers: Option<Body::Trailers> = match trailers {
+        let trailers = match trailers {
             Some(trailers) => Some(trailers.try_into_fields()?),
             None => None,
         };
         drop(self.stream);
-        self.body.finish(trailers).map_err(Error::wasi_error_code)
+        types::OutgoingBody::finish(self.body, trailers).map_err(Error::wasi_error_code)
     }
 
     fn registry(&self) -> &Registry {
@@ -368,19 +426,16 @@ where
     }
 }
 
-pub struct OutgoingRequest<Request: WasiOutgoingRequest, Registry: PollableRegistry> {
-    request: Request,
-    body: OutgoingBody<Request::OutgoingBody, Registry>,
+pub struct OutgoingRequest<Registry: PollableRegistry> {
+    request: types::OutgoingRequest,
+    body: OutgoingBody<Registry>,
 }
 
-impl<Request, Registry> OutgoingRequest<Request, Registry>
+impl<Registry> OutgoingRequest<Registry>
 where
-    Request: WasiOutgoingRequest,
-    <Request::OutgoingBody as WasiOutgoingBody>::OutputStream:
-        WasiOutputStream<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
-    pub fn new(request: Request, registry: Registry) -> Result<Self, Error> {
+    pub fn new(request: types::OutgoingRequest, registry: Registry) -> Result<Self, Error> {
         let body = request
             .body()
             .map_err(|()| Error::WasiInvalidState("outgoing-request.body already called"))?;
@@ -390,13 +445,13 @@ where
 
     pub fn from_headers(headers: &FieldEntries, registry: Registry) -> Result<Self, Error> {
         let fields = headers.try_into_fields()?;
-        let response = Request::new(fields);
+        let response = types::OutgoingRequest::new(fields);
         Self::new(response, registry)
     }
 
     pub fn set_method(&mut self, method: Method) -> Result<(), Error> {
         self.request
-            .set_method(&Request::Method::from_method(method))
+            .set_method(&method.into())
             .map_err(|()| Error::WasiInvalidValue("invalid method"))
     }
 
@@ -407,9 +462,8 @@ where
     }
 
     pub fn set_scheme(&mut self, scheme: Option<Scheme>) -> Result<(), Error> {
-        let scheme = scheme.map(Request::Scheme::from_scheme);
         self.request
-            .set_scheme(scheme.as_ref())
+            .set_scheme(scheme.map(|scheme| scheme.into()).as_ref())
             .map_err(|()| Error::WasiInvalidValue("invalid scheme"))
     }
 
@@ -420,23 +474,17 @@ where
     }
 }
 
-impl<Request, Registry> OutgoingRequest<Request, Registry>
+impl<Registry> OutgoingRequest<Registry>
 where
-    Request: WasiOutgoingHandler,
-    Request::FutureIncomingResponse: WasiFutureIncomingResponse<Pollable = Registry::Pollable>,
-    <Request::OutgoingBody as WasiOutgoingBody>::OutputStream:
-        WasiOutputStream<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
     pub fn send(
         self,
-        options: Option<Request::RequestOptions>,
-    ) -> Result<
-        ActiveOutgoingRequest<Request::OutgoingBody, Request::FutureIncomingResponse, Registry>,
-        Error,
-    > {
+        options: Option<types::RequestOptions>,
+    ) -> Result<ActiveOutgoingRequest<Registry>, Error> {
         let Self { request, body } = self;
-        let response = request.handle(options).map_err(Error::wasi_error_code)?;
+        let response = wasi::http::outgoing_handler::handle(request, options)
+            .map_err(Error::wasi_error_code)?;
         let inner = Subscribable::new(response, body.registry().clone());
         let future_response = FutureIncomingResponse { inner };
         Ok(ActiveOutgoingRequest {
@@ -446,71 +494,53 @@ where
     }
 }
 
-pub struct ActiveOutgoingRequest<Body, FutureResponse, Registry>
+pub struct ActiveOutgoingRequest<Registry>
 where
-    Body: WasiOutgoingBody,
-    FutureResponse: WasiFutureIncomingResponse<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
-    body: OutgoingBody<Body, Registry>,
-    future_response: FutureIncomingResponse<FutureResponse, Registry>,
+    body: OutgoingBody<Registry>,
+    future_response: FutureIncomingResponse<Registry>,
 }
 
-impl<Body, FutureResponse, Registry> ActiveOutgoingRequest<Body, FutureResponse, Registry>
+impl<Registry> ActiveOutgoingRequest<Registry>
 where
-    Body: WasiOutgoingBody,
-    FutureResponse: WasiFutureIncomingResponse<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
-    pub fn body(&mut self) -> &mut OutgoingBody<Body, Registry> {
+    pub fn body(&mut self) -> &mut OutgoingBody<Registry> {
         &mut self.body
     }
 
-    pub fn into_parts(
-        self,
-    ) -> (
-        OutgoingBody<Body, Registry>,
-        FutureIncomingResponse<FutureResponse, Registry>,
-    ) {
+    pub fn into_parts(self) -> (OutgoingBody<Registry>, FutureIncomingResponse<Registry>) {
         (self.body, self.future_response)
     }
 }
 
-impl<OutgoingBody, FutureResponse, Registry> IntoFuture
-    for ActiveOutgoingRequest<OutgoingBody, FutureResponse, Registry>
+impl<Registry> IntoFuture for ActiveOutgoingRequest<Registry>
 where
-    OutgoingBody: WasiOutgoingBody,
-    FutureResponse: WasiFutureIncomingResponse<Pollable = Registry::Pollable>,
-    <FutureResponse::IncomingResponse as WasiIncomingResponse>::IncomingBody:
-        WasiIncomingBody<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
-    type Output = Result<IncomingResponse<FutureResponse::IncomingResponse, Registry>, Error>;
-    type IntoFuture = FutureIncomingResponse<FutureResponse, Registry>;
+    type Output = Result<IncomingResponse<Registry>, Error>;
+    type IntoFuture = FutureIncomingResponse<Registry>;
 
     fn into_future(self) -> Self::IntoFuture {
         self.future_response
     }
 }
 
-pub struct FutureIncomingResponse<FutureResponse, Registry: PollableRegistry> {
-    inner: Subscribable<FutureResponse, Registry>,
+pub struct FutureIncomingResponse<Registry: PollableRegistry> {
+    inner: Subscribable<types::FutureIncomingResponse, Registry>,
 }
 
-impl<FutureResponse, Registry> Future for FutureIncomingResponse<FutureResponse, Registry>
+impl<Registry> Future for FutureIncomingResponse<Registry>
 where
-    FutureResponse: WasiFutureIncomingResponse<Pollable = Registry::Pollable>,
-    <FutureResponse::IncomingResponse as WasiIncomingResponse>::IncomingBody:
-        WasiIncomingBody<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
-    type Output = Result<IncomingResponse<FutureResponse::IncomingResponse, Registry>, Error>;
+    type Output = Result<IncomingResponse<Registry>, Error>;
 
     fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.inner.get() {
             Some(Ok(res)) => {
-                let response: <FutureResponse as WasiFutureIncomingResponse>::IncomingResponse =
-                    res.map_err(Error::wasi_error_code)?;
+                let response = res.map_err(Error::wasi_error_code)?;
                 // FIXME: figure out proper type contraints to avoid this
                 let registry = self.inner.registry().clone();
                 Poll::Ready(Ok(IncomingResponse::new(response, registry.clone())?))
@@ -526,19 +556,16 @@ where
     }
 }
 
-pub struct OutgoingResponse<Response: WasiOutgoingResponse, Registry: PollableRegistry> {
-    response: Response,
-    body: OutgoingBody<Response::OutgoingBody, Registry>,
+pub struct OutgoingResponse<Registry: PollableRegistry> {
+    response: types::OutgoingResponse,
+    body: OutgoingBody<Registry>,
 }
 
-impl<Response, Registry> OutgoingResponse<Response, Registry>
+impl<Registry> OutgoingResponse<Registry>
 where
-    Response: WasiOutgoingResponse,
-    <Response::OutgoingBody as WasiOutgoingBody>::OutputStream:
-        WasiOutputStream<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
-    pub fn new(response: Response, registry: Registry) -> Result<Self, Error> {
+    pub fn new(response: types::OutgoingResponse, registry: Registry) -> Result<Self, Error> {
         let body = response
             .body()
             .map_err(|()| Error::WasiInvalidState("outgoing-response.body already called"))?;
@@ -548,7 +575,7 @@ where
 
     pub fn from_headers(headers: &FieldEntries, registry: Registry) -> Result<Self, Error> {
         let fields = headers.try_into_fields()?;
-        let response = Response::new(fields);
+        let response = types::OutgoingResponse::new(fields);
         Self::new(response, registry)
     }
 
@@ -558,77 +585,51 @@ where
             .map_err(|()| Error::WasiInvalidValue("invalid status code"))
     }
 
-    pub fn body(&mut self) -> &mut OutgoingBody<Response::OutgoingBody, Registry> {
+    pub fn body(&mut self) -> &mut OutgoingBody<Registry> {
         &mut self.body
     }
 
-    pub fn into_body(self) -> OutgoingBody<Response::OutgoingBody, Registry> {
+    pub fn into_body(self) -> OutgoingBody<Registry> {
         self.body
     }
 
-    fn into_parts(self) -> (Response, OutgoingBody<Response::OutgoingBody, Registry>) {
+    fn into_parts(self) -> (types::OutgoingResponse, OutgoingBody<Registry>) {
         (self.response, self.body)
     }
 }
 
-pub struct ResponseOutparam<Outparam> {
-    outparam: Outparam,
+pub struct ResponseOutparam {
+    outparam: types::ResponseOutparam,
 }
 
-impl<Outparam> ResponseOutparam<Outparam>
-where
-    Outparam: WasiResponseOutparam,
-{
-    pub fn new(outparam: Outparam) -> Self {
+impl ResponseOutparam {
+    pub fn new(outparam: types::ResponseOutparam) -> Self {
         Self { outparam }
     }
 
     pub fn set_response<Registry>(
         self,
-        response: OutgoingResponse<Outparam::OutgoingResponse, Registry>,
-    ) -> OutgoingBody<<Outparam::OutgoingResponse as WasiOutgoingResponse>::OutgoingBody, Registry>
+        response: OutgoingResponse<Registry>,
+    ) -> OutgoingBody<Registry>
     where
-        <<Outparam::OutgoingResponse as WasiOutgoingResponse>::OutgoingBody as WasiOutgoingBody>::OutputStream:
-            WasiOutputStream<Pollable = Registry::Pollable>,
         Registry: PollableRegistry,
     {
         let (wasi_response, body) = response.into_parts();
-        self.outparam.set(Ok(wasi_response));
+        types::ResponseOutparam::set(self.outparam, Ok(wasi_response));
         body
     }
 
-    pub fn set_error(self, err: &Outparam::ErrorCode) {
-        self.outparam.set(Err(err));
+    pub fn set_error(self, err: types::ErrorCode) {
+        types::ResponseOutparam::set(self.outparam, Err(err));
     }
-}
-
-#[derive(Debug)]
-pub enum Method {
-    Get,
-    Head,
-    Post,
-    Put,
-    Delete,
-    Connect,
-    Options,
-    Trace,
-    Patch,
-    Other(String),
-}
-
-#[derive(Debug)]
-pub enum Scheme {
-    Http,
-    Https,
-    Other(String),
 }
 
 #[derive(Debug)]
 pub struct FieldEntries(Vec<(String, Vec<u8>)>);
 
 impl FieldEntries {
-    pub fn try_into_fields<Fields: WasiFields>(&self) -> Result<Fields, Error> {
-        Fields::from_list(&self.0).map_err(|err| Error::WasiFieldsError(err.to_string()))
+    pub fn try_into_fields(&self) -> Result<types::Fields, Error> {
+        types::Fields::from_list(&self.0).map_err(|err| Error::WasiFieldsError(err.to_string()))
     }
 }
 
@@ -648,13 +649,8 @@ impl IntoIterator for FieldEntries {
     }
 }
 
-impl<Fields: WasiFields> From<Fields> for FieldEntries {
-    fn from(fields: Fields) -> Self {
+impl From<types::Fields> for FieldEntries {
+    fn from(fields: types::Fields) -> Self {
         Self(fields.entries())
     }
-}
-
-pub enum StreamError<IoError> {
-    LastOperationFailed(IoError),
-    Closed,
 }

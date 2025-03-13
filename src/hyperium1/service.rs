@@ -1,48 +1,32 @@
 use std::{convert::Infallible, task::Context};
 
+use wasi::http::types;
+
 use crate::{
     hyperium1::{incoming_request, outgoing_response},
     outgoing::OutgoingBodyCopier,
     poll::{noop_waker, PollableRegistry},
-    wasi::{
-        traits::{
-            WasiIncomingBody, WasiIncomingRequest, WasiOutgoingBody, WasiOutgoingResponse,
-            WasiOutputStream, WasiResponseOutparam,
-        },
-        IncomingRequest, ResponseOutparam,
-    },
+    wasi::{IncomingRequest, ResponseOutparam},
     Error, IncomingHttpBody,
 };
 
 use super::Hyperium1OutgoingBodyCopier;
 
-pub fn handle_service_call<
-    Service,
-    Request,
-    Outparam,
-    ResponseBody,
-    Registry,
->(
+pub fn handle_service_call<Service, ResponseBody, Registry>(
     mut service: Service,
-    request: Request,
-    response_out: Outparam,
+    request: types::IncomingRequest,
+    response_out: types::ResponseOutparam,
     registry: Registry,
 ) -> Result<(), Error>
 where
     Service: tower_service::Service<
-        http1::Request<
-            IncomingHttpBody<Request::IncomingBody, Registry>,
-        >,
+        http1::Request<IncomingHttpBody<Registry>>,
         Response = http1::Response<ResponseBody>,
         Error = Infallible,
     >,
     ResponseBody: http_body1::Body + Unpin,
     ResponseBody::Data: Unpin,
     anyhow::Error: From<ResponseBody::Error>,
-    Request: WasiIncomingRequest,
-    Request::IncomingBody: WasiIncomingBody<Pollable = Registry::Pollable>,
-    Outparam: WasiResponseOutparam,
-    <<Outparam::OutgoingResponse as WasiOutgoingResponse>::OutgoingBody as WasiOutgoingBody>::OutputStream: WasiOutputStream<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
     let waker = noop_waker();
