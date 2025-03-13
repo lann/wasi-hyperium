@@ -4,23 +4,18 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use crate::wasi::traits::{WasiPoll, WasiPollable};
+use wasi::io::poll::Pollable;
 
 /// A PollableRegistry manages the polling of Pollables in relation to some
 /// Rust async executor. This must be a cheaply-`clone`able handle to its
 /// underlying state.
 pub trait PollableRegistry: Clone + Unpin {
-    type Pollable: WasiPollable;
     type RegisteredPollable: Unpin;
 
     /// Registers the given pollable to be polled. When the pollable is ready
     /// the the given context's waker should be called. The pollable must be
     /// immediately dropped when the returned RegisteredPollable is dropped.
-    fn register_pollable(
-        &self,
-        cx: &mut Context,
-        pollable: Self::Pollable,
-    ) -> Self::RegisteredPollable;
+    fn register_pollable(&self, cx: &mut Context, pollable: Pollable) -> Self::RegisteredPollable;
 
     /// Poll all pollables. Returns false if there are no active pollables.
     fn poll(&self) -> bool;
@@ -43,24 +38,20 @@ pub trait PollableRegistry: Clone + Unpin {
     }
 }
 
-pub struct Poller<Pollable: WasiPoll> {
-    entries: Arc<Mutex<HashMap<u32, Entry<Pollable>>>>,
+#[derive(Default)]
+pub struct Poller {
+    entries: Arc<Mutex<HashMap<u32, Entry>>>,
 }
 
-struct Entry<Pollable: WasiPollable> {
+struct Entry {
     pollable: Weak<Pollable>,
     waker: Waker,
 }
 
-impl<Pollable: WasiPoll> PollableRegistry for Poller<Pollable> {
-    type Pollable = Pollable;
+impl PollableRegistry for Poller {
     type RegisteredPollable = Arc<Pollable>;
 
-    fn register_pollable(
-        &self,
-        cx: &mut Context,
-        pollable: Self::Pollable,
-    ) -> Self::RegisteredPollable {
+    fn register_pollable(&self, cx: &mut Context, pollable: Pollable) -> Self::RegisteredPollable {
         let handle = pollable.handle();
         let pollable = Arc::new(pollable);
         let entry = Entry {
@@ -87,7 +78,7 @@ impl<Pollable: WasiPoll> PollableRegistry for Poller<Pollable> {
             .filter_map(|entry| entry.pollable.upgrade())
             .collect::<Vec<_>>();
         let pollable_refs = pollables.iter().map(|p| p.as_ref()).collect::<Vec<_>>();
-        let ready_idxs = Pollable::poll(&pollable_refs);
+        let ready_idxs = wasi::io::poll::poll(&pollable_refs);
 
         // Remove and wake any ready pollables
         for idx in ready_idxs {
@@ -100,18 +91,10 @@ impl<Pollable: WasiPoll> PollableRegistry for Poller<Pollable> {
     }
 }
 
-impl<Pollable: WasiPoll> Clone for Poller<Pollable> {
+impl Clone for Poller {
     fn clone(&self) -> Self {
         Self {
             entries: self.entries.clone(),
-        }
-    }
-}
-
-impl<Pollable: WasiPoll> Default for Poller<Pollable> {
-    fn default() -> Self {
-        Self {
-            entries: Default::default(),
         }
     }
 }
@@ -134,3 +117,29 @@ impl std::fmt::Display for Stalled {
 }
 
 impl std::error::Error for Stalled {}
+
+pub trait WasiSubscribe: Unpin {
+    fn subscribe(&self) -> wasi::io::poll::Pollable;
+}
+
+macro_rules! impl_subscribe {
+    ($($ty:ty),+) => {
+        $(
+            impl WasiSubscribe for $ty {
+                fn subscribe(&self) -> wasi::io::poll::Pollable {
+                    self.subscribe()
+                }
+            }
+        )+
+    }
+}
+mod subscribe_impls {
+    use super::WasiSubscribe;
+    use wasi::http::types::*;
+    impl_subscribe!(
+        FutureTrailers,
+        InputStream,
+        OutputStream,
+        FutureIncomingResponse
+    );
+}

@@ -51,7 +51,7 @@ impl TryFrom<FieldEntries> for http0::HeaderMap {
 
 impl From<http0::HeaderMap> for FieldEntries {
     fn from(map: http0::HeaderMap) -> Self {
-        map.into()
+        (&map).into()
     }
 }
 

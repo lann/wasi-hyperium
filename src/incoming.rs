@@ -5,35 +5,37 @@ use std::{
 };
 
 use bytes::Bytes;
+use wasi::http::types;
 
 use crate::{
     poll::PollableRegistry,
-    wasi::{traits::WasiIncomingBody, FieldEntries, FutureTrailers, IncomingBody},
+    wasi::{FieldEntries, FutureTrailers, IncomingBody},
     Error,
 };
 
-pub struct IncomingHttpBody<Body, Registry>
+pub struct IncomingHttpBody<Registry>
 where
-    Body: WasiIncomingBody,
     Registry: PollableRegistry,
 {
-    pub(crate) state: IncomingState<Body, Registry>,
+    pub(crate) state: IncomingState<Registry>,
 }
 
-pub(crate) enum IncomingState<Body: WasiIncomingBody, Registry: PollableRegistry> {
+pub(crate) enum IncomingState<Registry>
+where
+    Registry: PollableRegistry,
+{
     Empty,
-    Body(IncomingBody<Body, Registry>),
-    Trailers(FutureTrailers<Body::FutureTrailers, Registry>),
+    Body(IncomingBody<Registry>),
+    Trailers(FutureTrailers<Registry>),
 }
 
 const READ_FRAME_SIZE: usize = 16 * 1024;
 
-impl<Body, Registry> IncomingHttpBody<Body, Registry>
+impl<Registry> IncomingHttpBody<Registry>
 where
-    Body: WasiIncomingBody,
-    Registry: PollableRegistry<Pollable = Body::Pollable>,
+    Registry: PollableRegistry,
 {
-    pub fn new(body: Body, registry: Registry) -> Result<Self, Error> {
+    pub fn new(body: types::IncomingBody, registry: Registry) -> Result<Self, Error> {
         Ok(IncomingBody::new(body, registry)?.into())
     }
 
@@ -80,7 +82,7 @@ where
         }
     }
 
-    pub(crate) fn take_body(&mut self) -> IncomingBody<Body, Registry> {
+    pub(crate) fn take_body(&mut self) -> IncomingBody<Registry> {
         match std::mem::replace(&mut self.state, IncomingState::Empty) {
             IncomingState::Body(body) => body,
             _ => panic!("called take_body on non-body state"),
@@ -88,12 +90,11 @@ where
     }
 }
 
-impl<Body, Registry> From<IncomingBody<Body, Registry>> for IncomingHttpBody<Body, Registry>
+impl<Registry> From<IncomingBody<Registry>> for IncomingHttpBody<Registry>
 where
-    Body: WasiIncomingBody,
-    Registry: PollableRegistry<Pollable = Body::Pollable>,
+    Registry: PollableRegistry,
 {
-    fn from(body: IncomingBody<Body, Registry>) -> Self {
+    fn from(body: IncomingBody<Registry>) -> Self {
         Self {
             state: IncomingState::Body(body),
         }

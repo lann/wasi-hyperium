@@ -1,10 +1,9 @@
-use wasi::traits::{WasiError, WasiErrorCode, WasiStreamError};
-
-pub mod outgoing;
 mod incoming;
+pub mod outgoing;
 pub mod poll;
 pub mod wasi;
 
+use ::wasi::{http::types::ErrorCode, io::streams::StreamError};
 pub use incoming::IncomingHttpBody;
 
 #[cfg(feature = "hyperium0")]
@@ -41,16 +40,16 @@ pub enum Error {
 }
 
 impl Error {
-    fn wasi_error_code(err: impl WasiErrorCode) -> Self {
+    fn wasi_error_code(err: ErrorCode) -> Self {
         Self::WasiErrorCode(err.to_string())
     }
 
-    fn wasi_stream_error(err: impl WasiStreamError) -> Self {
-        match err.into_stream_error() {
-            wasi::StreamError::LastOperationFailed(err) => {
+    fn wasi_stream_error(err: StreamError) -> Self {
+        match err {
+            StreamError::LastOperationFailed(err) => {
                 Self::WasiStreamOperationFailed(err.to_debug_string())
             }
-            wasi::StreamError::Closed => Self::WasiStreamClosed,
+            StreamError::Closed => Self::WasiStreamClosed,
         }
     }
 }

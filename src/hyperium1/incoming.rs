@@ -6,19 +6,14 @@ use http_body1::Frame;
 use crate::{
     incoming::{IncomingHttpBody, IncomingState},
     poll::PollableRegistry,
-    wasi::{
-        traits::{WasiIncomingBody, WasiIncomingRequest, WasiIncomingResponse},
-        IncomingRequest, IncomingResponse,
-    },
+    wasi::{IncomingRequest, IncomingResponse},
     Error,
 };
 
-pub fn incoming_request<Request, Registry>(
-    request: IncomingRequest<Request, Registry>,
-) -> Result<http1::Request<IncomingHttpBody<Request::IncomingBody, Registry>>, Error>
+pub fn incoming_request<Registry>(
+    request: IncomingRequest<Registry>,
+) -> Result<http1::Request<IncomingHttpBody<Registry>>, Error>
 where
-    Request: WasiIncomingRequest,
-    Request::IncomingBody: WasiIncomingBody<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
     let uri = {
@@ -41,12 +36,10 @@ where
     Ok(builder.body(request.into_body().into())?)
 }
 
-pub fn incoming_response<Response, Registry>(
-    response: IncomingResponse<Response, Registry>,
-) -> Result<http1::Response<IncomingHttpBody<Response::IncomingBody, Registry>>, Error>
+pub fn incoming_response<Registry>(
+    response: IncomingResponse<Registry>,
+) -> Result<http1::Response<IncomingHttpBody<Registry>>, Error>
 where
-    Response: WasiIncomingResponse,
-    Response::IncomingBody: WasiIncomingBody<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
     let mut builder = http1::Response::builder().status(response.status());
@@ -56,9 +49,8 @@ where
     Ok(builder.body(response.into_body().into())?)
 }
 
-impl<IncomingBody, Registry> http_body1::Body for IncomingHttpBody<IncomingBody, Registry>
+impl<Registry> http_body1::Body for IncomingHttpBody<Registry>
 where
-    IncomingBody: WasiIncomingBody<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
     type Data = Bytes;
@@ -80,9 +72,8 @@ where
     }
 }
 
-impl<IncomingBody, Registry> IncomingHttpBody<IncomingBody, Registry>
+impl<Registry> IncomingHttpBody<Registry>
 where
-    IncomingBody: WasiIncomingBody<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
     #[allow(clippy::type_complexity)]

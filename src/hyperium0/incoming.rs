@@ -1,22 +1,20 @@
 use std::task::Poll;
 
 use bytes::Bytes;
+use wasi::http::types;
 
 use crate::{
     incoming::{IncomingHttpBody, IncomingState},
     poll::PollableRegistry,
-    wasi::traits::WasiIncomingBody,
-    wasi::{traits::WasiIncomingRequest, IncomingRequest},
+    wasi::IncomingRequest,
     Error,
 };
 
-pub fn incoming_request<Request, Registry>(
-    request: Request,
+pub fn incoming_request<Registry>(
+    request: types::IncomingRequest,
     registry: Registry,
-) -> Result<http0::Request<IncomingHttpBody<Request::IncomingBody, Registry>>, Error>
+) -> Result<http0::Request<IncomingHttpBody<Registry>>, Error>
 where
-    Request: WasiIncomingRequest,
-    Request::IncomingBody: WasiIncomingBody<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
     let req = IncomingRequest::new(request, registry)?;
@@ -40,9 +38,8 @@ where
     Ok(builder.body(req.into_body().into())?)
 }
 
-impl<IncomingBody, Registry> http_body0::Body for IncomingHttpBody<IncomingBody, Registry>
+impl<Registry> http_body0::Body for IncomingHttpBody<Registry>
 where
-    IncomingBody: WasiIncomingBody<Pollable = Registry::Pollable>,
     Registry: PollableRegistry,
 {
     type Data = Bytes;

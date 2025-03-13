@@ -1,2 +1,0 @@
-// Upstream this is defined in proxy.wit.
-package wasi:http@0.2.0;
